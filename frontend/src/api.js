@@ -1,0 +1,30 @@
+const BASE = '/api';
+
+async function req(url, opts = {}) {
+  const res = await fetch(BASE + url, {
+    headers: { 'Content-Type': 'application/json' },
+    ...opts,
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  return res.json();
+}
+
+export const remotes = {
+  list: () => req('/remotes'),
+  add: (data) => req('/remotes', { method: 'POST', body: data }),
+  remove: (name) => req(`/remotes/${name}`, { method: 'DELETE' }),
+  browse: (name, path = '') => req(`/remotes/${encodeURIComponent(name)}/browse?path=${encodeURIComponent(path)}`),
+};
+
+export const jobs = {
+  list: () => req('/jobs'),
+  create: (data) => req('/jobs', { method: 'POST', body: data }),
+  update: (id, data) => req(`/jobs/${id}`, { method: 'PUT', body: data }),
+  remove: (id) => req(`/jobs/${id}`, { method: 'DELETE' }),
+  run: (id) => req(`/jobs/${id}/run`, { method: 'POST' }),
+};
+
+export const logs = {
+  list: (jobId) => req(`/logs/${jobId}`),
+  get: (jobId, filename) => req(`/logs/${jobId}/${filename}`),
+};

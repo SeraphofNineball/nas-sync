@@ -1,8 +1,16 @@
-# Never commit credentials
+# Credentials
 .env
 
-# Logs
-logs/
+# Dependencies
+node_modules/
+frontend/node_modules/
+backend/node_modules/
+
+# Frontend build
+frontend/dist/
+
+# Runtime data (jobs, rclone config, logs)
+data/
 
 # OS
 .DS_Store
