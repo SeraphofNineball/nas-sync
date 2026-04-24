@@ -1,0 +1,9 @@
+# Never commit credentials
+.env
+
+# Logs
+logs/
+
+# OS
+.DS_Store
+Thumbs.db

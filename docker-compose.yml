@@ -1,0 +1,33 @@
+services:
+
+  # Web UI — browse remotes and trigger jobs manually
+  rclone-gui:
+    image: rclone/rclone:latest
+    container_name: nas-sync-gui
+    restart: unless-stopped
+    command: >
+      rcd
+      --rc-web-gui
+      --rc-web-gui-no-open-browser
+      --rc-addr=0.0.0.0:5572
+      --rc-user=${GUI_USER}
+      --rc-pass=${GUI_PASS}
+      --log-file=/logs/rclone-gui.log
+      --log-level=INFO
+    volumes:
+      - ./config/rclone.conf:/config/rclone/rclone.conf:ro
+      - ./logs:/logs
+    ports:
+      - "5572:5572"
+
+  # Scheduler — runs sync jobs on cron schedule
+  rclone-cron:
+    image: rclone/rclone:latest
+    container_name: nas-sync-cron
+    restart: unless-stopped
+    entrypoint: ["crond", "-f", "-d", "8"]
+    volumes:
+      - ./config/rclone.conf:/config/rclone/rclone.conf:ro
+      - ./config/scripts:/scripts:ro
+      - ./config/crontab:/etc/crontabs/root
+      - ./logs:/logs
