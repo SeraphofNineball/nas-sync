@@ -36,7 +36,17 @@ function unscheduleJob(jobId) {
 }
 
 function initScheduler() {
-  readJobs().forEach(scheduleJob);
+  const jobs = readJobs();
+  let dirty = false;
+  jobs.forEach(job => {
+    if (job.status === 'running') {
+      job.status = 'idle';
+      job.lastError = 'Interrupted — server was restarted';
+      dirty = true;
+    }
+  });
+  if (dirty) writeJobs(jobs);
+  jobs.forEach(scheduleJob);
 }
 
 module.exports = { scheduleJob, unscheduleJob, executeJob, initScheduler };

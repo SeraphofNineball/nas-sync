@@ -219,7 +219,7 @@ export default function JobManager() {
                     )}
                     <button className="btn-ghost btn-sm" onClick={() => openLogs(job)}>Logs</button>
                     <button className="btn-ghost btn-sm" onClick={() => openEdit(job)} disabled={isRunning}>Edit</button>
-                    <button className="btn-danger btn-sm" onClick={() => removeJob(job.id)} disabled={isRunning}>Delete</button>
+                    <button className="btn-danger btn-sm" onClick={() => removeJob(job.id)}>Delete</button>
                   </div>
                 </div>
               </div>
