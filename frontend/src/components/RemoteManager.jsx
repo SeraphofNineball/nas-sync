@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { remotes as api } from '../api.js';
 
 const TYPES = {
+  local:  { label: 'Local / Mounted Path', fields: [] },
   smb:    { label: 'SMB / Windows Share', fields: [
     { key: 'host', label: 'Host / IP', required: true },
     { key: 'user', label: 'Username' },

@@ -4,6 +4,7 @@ services:
     container_name: nas-sync
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "3001:3000"
     volumes:
       - ./data:/data
+      - /volume1:/volume1
