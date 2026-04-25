@@ -2,8 +2,15 @@ const router = require('express').Router();
 const { v4: uuidv4 } = require('uuid');
 const { readJobs, writeJobs } = require('../services/store');
 const { scheduleJob, unscheduleJob, executeJob } = require('../services/scheduler');
+const { getProgress, stopJob, stopAllJobs } = require('../services/rclone');
 
-router.get('/', (req, res) => res.json(readJobs()));
+router.get('/', (req, res) => {
+  const jobs = readJobs();
+  res.json(jobs.map(j => ({
+    ...j,
+    progress: j.status === 'running' ? getProgress(j.id) : null,
+  })));
+});
 
 router.post('/', (req, res) => {
   const jobs = readJobs();
@@ -31,9 +38,19 @@ router.delete('/:id', (req, res) => {
   res.json({ success: true });
 });
 
+router.post('/stop-all', (req, res) => {
+  stopAllJobs();
+  res.json({ success: true });
+});
+
 router.post('/:id/run', (req, res) => {
   executeJob(req.params.id);
   res.json({ success: true });
+});
+
+router.post('/:id/stop', (req, res) => {
+  const stopped = stopJob(req.params.id);
+  res.json({ success: stopped });
 });
 
 module.exports = router;

@@ -14,6 +14,7 @@ export const remotes = {
   add: (data) => req('/remotes', { method: 'POST', body: data }),
   remove: (name) => req(`/remotes/${name}`, { method: 'DELETE' }),
   browse: (name, path = '') => req(`/remotes/${encodeURIComponent(name)}/browse?path=${encodeURIComponent(path)}`),
+  status: () => req('/remotes/status'),
 };
 
 export const jobs = {
@@ -22,6 +23,8 @@ export const jobs = {
   update: (id, data) => req(`/jobs/${id}`, { method: 'PUT', body: data }),
   remove: (id) => req(`/jobs/${id}`, { method: 'DELETE' }),
   run: (id) => req(`/jobs/${id}/run`, { method: 'POST' }),
+  stop: (id) => req(`/jobs/${id}/stop`, { method: 'POST' }),
+  stopAll: () => req('/jobs/stop-all', { method: 'POST' }),
 };
 
 export const logs = {
