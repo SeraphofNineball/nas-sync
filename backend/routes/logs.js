@@ -1,7 +1,7 @@
 const router = require('express').Router();
 const fs = require('fs');
 const path = require('path');
-const { LOGS_DIR } = require('../services/rclone');
+const { LOGS_DIR, REPORTS_DIR, listReports } = require('../services/rclone');
 
 router.get('/:jobId', (req, res) => {
   try {
@@ -11,6 +11,19 @@ router.get('/:jobId', (req, res) => {
       .sort().reverse().slice(0, 20);
     res.json(files);
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.get('/:jobId/reports', (req, res) => {
+  try { res.json(listReports(req.params.jobId).slice(0, 20)); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.get('/:jobId/reports/:filename', (req, res) => {
+  const safe = path.resolve(REPORTS_DIR, req.params.filename);
+  if (!safe.startsWith(path.resolve(REPORTS_DIR))) return res.status(403).send('Forbidden');
+  if (!fs.existsSync(safe)) return res.status(404).send('Not found');
+  res.set('Content-Type', 'text/html; charset=utf-8');
+  res.sendFile(safe);
 });
 
 router.get('/:jobId/:filename', (req, res) => {

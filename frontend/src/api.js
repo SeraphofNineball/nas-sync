@@ -31,3 +31,8 @@ export const logs = {
   list: (jobId) => req(`/logs/${jobId}`),
   get: (jobId, filename) => req(`/logs/${jobId}/${filename}`),
 };
+
+export const reports = {
+  list: (jobId) => req(`/logs/${jobId}/reports`),
+  url:  (jobId, filename) => `${BASE}/logs/${jobId}/reports/${filename}`,
+};

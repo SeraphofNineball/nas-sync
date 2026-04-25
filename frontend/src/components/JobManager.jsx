@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { remotes as remotesApi, jobs as jobsApi, logs as logsApi } from '../api.js';
+import { remotes as remotesApi, jobs as jobsApi, logs as logsApi, reports as reportsApi } from '../api.js';
 import FileBrowser from './FileBrowser.jsx';
 
 const SCHEDULES = [
@@ -41,6 +41,9 @@ export default function JobManager() {
   const [logFiles,   setLogFiles]   = useState([]);
   const [logContent, setLogContent] = useState('');
   const [logFile,    setLogFile]    = useState('');
+  const [reportJob,  setReportJob]  = useState(null);
+  const [reportFiles, setReportFiles] = useState([]);
+  const [reportFile, setReportFile] = useState('');
   const [browser,    setBrowser]    = useState(null);
   const [now,        setNow]        = useState(Date.now());
 
@@ -134,6 +137,13 @@ export default function JobManager() {
     setLogContent(res.content || '');
   };
 
+  const openReports = async (job) => {
+    setReportJob(job); setReportFile('');
+    const files = await reportsApi.list(job.id);
+    setReportFiles(files);
+    if (files.length > 0) setReportFile(files[0]);
+  };
+
   const set = (key, value) => setForm(f => ({ ...f, [key]: value }));
 
   const scheduleLabel = (job) => {
@@ -201,12 +211,37 @@ export default function JobManager() {
                           {p?.transferred && p?.total && (
                             <span>{p.transferred} / {p.total}</span>
                           )}
-                          {p?.speed && <span>{p.speed}</span>}
+                          {p?.speed && (
+                            <span style={{ color: 'var(--running)', fontWeight: 500 }}>↑ {p.speed}</span>
+                          )}
+                          {p?.files != null && p?.totalFiles != null && (
+                            <span>{p.files.toLocaleString()} / {p.totalFiles.toLocaleString()} files</span>
+                          )}
+                          {p?.errors > 0 && (
+                            <span style={{ color: 'var(--danger)' }}>{p.errors} errors</span>
+                          )}
                           {p?.eta && p.eta !== '-' && <span>ETA {p.eta}</span>}
                           {p?.startTime && (
                             <span>Elapsed {fmtElapsed(p.startTime)}</span>
                           )}
                         </div>
+                      </div>
+                    )}
+
+                    {/* Last summary (post-run) */}
+                    {!isRunning && job.lastSummary && (
+                      <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--muted)', marginTop: 6, flexWrap: 'wrap' }}>
+                        <span>Copied {job.lastSummary.copied.toLocaleString()}</span>
+                        <span>Deleted {job.lastSummary.deleted.toLocaleString()}</span>
+                        {job.lastSummary.updated > 0 && <span>Updated {job.lastSummary.updated.toLocaleString()}</span>}
+                        {job.lastSummary.errors > 0 && (
+                          <span style={{ color: 'var(--danger)' }}>{job.lastSummary.errors} errors</span>
+                        )}
+                        {job.lastSummary.integrity && (
+                          <span style={{ color: job.lastSummary.integrity.ok ? 'var(--success)' : 'var(--danger)', fontWeight: 500 }}>
+                            Integrity: {job.lastSummary.integrity.ok ? '✓ pass' : `✗ ${job.lastSummary.integrity.differences + job.lastSummary.integrity.missing} diff`}
+                          </span>
+                        )}
                       </div>
                     )}
                   </div>
@@ -217,6 +252,7 @@ export default function JobManager() {
                     ) : (
                       <button className="btn-ghost btn-sm" onClick={() => runJob(job.id)}>Run</button>
                     )}
+                    <button className="btn-ghost btn-sm" onClick={() => openReports(job)}>Report</button>
                     <button className="btn-ghost btn-sm" onClick={() => openLogs(job)}>Logs</button>
                     <button className="btn-ghost btn-sm" onClick={() => openEdit(job)} disabled={isRunning}>Edit</button>
                     <button className="btn-danger btn-sm" onClick={() => removeJob(job.id)}>Delete</button>
@@ -327,6 +363,44 @@ export default function JobManager() {
           onSelect={path => { set(browser.field, path); setBrowser(null); }}
           onClose={() => setBrowser(null)}
         />
+      )}
+
+      {/* Report viewer modal */}
+      {reportJob && (
+        <div className="modal-backdrop" onClick={e => e.target === e.currentTarget && setReportJob(null)}>
+          <div className="modal" style={{ width: '90vw', maxWidth: 1100, height: '90vh', display: 'flex', flexDirection: 'column' }}>
+            <div className="modal-header">
+              <h2>Report — {reportJob.name}</h2>
+              <button className="modal-close" onClick={() => setReportJob(null)}>×</button>
+            </div>
+            {reportFiles.length === 0 ? (
+              <p style={{ color: 'var(--muted)' }}>No reports yet. Run the job and let it complete.</p>
+            ) : (
+              <>
+                <div className="field">
+                  <label>Run</label>
+                  <select value={reportFile} onChange={e => setReportFile(e.target.value)}>
+                    {reportFiles.map(f => <option key={f} value={f}>{f.split('-').slice(1).join('-').replace('.html', '')}</option>)}
+                  </select>
+                </div>
+                <iframe
+                  title="report"
+                  src={reportFile ? reportsApi.url(reportJob.id, reportFile) : 'about:blank'}
+                  style={{ flex: 1, width: '100%', border: '1px solid var(--border)', borderRadius: 6, background: '#fff' }}
+                />
+              </>
+            )}
+            <div className="modal-footer">
+              {reportFile && (
+                <a className="btn-ghost btn-sm" href={reportsApi.url(reportJob.id, reportFile)} target="_blank" rel="noreferrer"
+                   style={{ textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}>
+                  Open in new tab
+                </a>
+              )}
+              <button className="btn-ghost" onClick={() => setReportJob(null)}>Close</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Log viewer modal */}
