@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { remotes as remotesApi, jobs as jobsApi, logs as logsApi } from '../api.js';
+import FileBrowser from './FileBrowser.jsx';
 
 const SCHEDULES = [
   { label: 'Manual only',         value: '' },
@@ -26,6 +27,7 @@ export default function JobManager() {
   const [logFiles,   setLogFiles]   = useState([]);
   const [logContent, setLogContent] = useState('');
   const [logFile,    setLogFile]    = useState('');
+  const [browser,    setBrowser]    = useState(null); // { field: 'sourcePath'|'destPath', remote }
 
   const loadJobs    = useCallback(() => jobsApi.list().then(setJobList), []);
   const loadRemotes = useCallback(() => remotesApi.list().then(setRemoteList), []);
@@ -201,7 +203,15 @@ export default function JobManager() {
               </div>
               <div className="field">
                 <label>Source Path</label>
-                <input value={form.sourcePath} onChange={e => set('sourcePath', e.target.value)} placeholder="e.g. Media/Movies" />
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input value={form.sourcePath} onChange={e => set('sourcePath', e.target.value)} placeholder="e.g. Media/Movies" />
+                  <button
+                    type="button" className="btn-ghost btn-sm"
+                    style={{ whiteSpace: 'nowrap', flexShrink: 0 }}
+                    disabled={!form.sourceRemote}
+                    onClick={() => setBrowser({ field: 'sourcePath', remote: form.sourceRemote })}
+                  >Browse</button>
+                </div>
               </div>
               <div className="field">
                 <label>Destination Remote</label>
@@ -212,7 +222,15 @@ export default function JobManager() {
               </div>
               <div className="field">
                 <label>Destination Path</label>
-                <input value={form.destPath} onChange={e => set('destPath', e.target.value)} placeholder="e.g. Backups/Media" />
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input value={form.destPath} onChange={e => set('destPath', e.target.value)} placeholder="e.g. Backups/Media" />
+                  <button
+                    type="button" className="btn-ghost btn-sm"
+                    style={{ whiteSpace: 'nowrap', flexShrink: 0 }}
+                    disabled={!form.destRemote}
+                    onClick={() => setBrowser({ field: 'destPath', remote: form.destRemote })}
+                  >Browse</button>
+                </div>
               </div>
             </div>
 
@@ -243,6 +261,16 @@ export default function JobManager() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* File browser modal */}
+      {browser && (
+        <FileBrowser
+          remote={browser.remote}
+          initialPath={form[browser.field] || ''}
+          onSelect={path => { set(browser.field, path); setBrowser(null); }}
+          onClose={() => setBrowser(null)}
+        />
       )}
 
       {/* Log viewer modal */}
