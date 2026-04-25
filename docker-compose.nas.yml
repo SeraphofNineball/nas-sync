@@ -1,0 +1,9 @@
+services:
+  nas-sync:
+    image: ghcr.io/seraphofnineball/nas-sync:latest
+    container_name: nas-sync
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/data
