@@ -2,21 +2,55 @@ import { useState, useEffect, useCallback } from 'react';
 import { remotes as remotesApi, jobs as jobsApi, logs as logsApi, reports as reportsApi } from '../api.js';
 import FileBrowser from './FileBrowser.jsx';
 
-const SCHEDULES = [
-  { label: 'Manual only',       value: '' },
-  { label: 'Every hour',        value: '0 * * * *' },
-  { label: 'Every 6 hours',     value: '0 */6 * * *' },
-  { label: 'Every 12 hours',    value: '0 */12 * * *' },
-  { label: 'Daily at 2 AM',     value: '0 2 * * *' },
-  { label: 'Daily at midnight', value: '0 0 * * *' },
-  { label: 'Weekly (Sun 3 AM)', value: '0 3 * * 0' },
-  { label: 'Custom cron…',      value: 'custom' },
-];
+const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+// Parse a stored cron string back into form fields for editing.
+function parseCron(cron) {
+  const def = { scheduleMode: 'manual', scheduleTime: '02:00', scheduleDow: '0', scheduleDom: '1', customSchedule: '' };
+  if (!cron) return def;
+  const parts = cron.trim().split(/\s+/);
+  if (parts.length !== 5) return { ...def, scheduleMode: 'custom', customSchedule: cron };
+  const [min, hour, dom, , dow] = parts;
+  if (!/^\d+$/.test(min) || !/^\d+$/.test(hour)) return { ...def, scheduleMode: 'custom', customSchedule: cron };
+  const time = `${String(+hour).padStart(2, '0')}:${String(+min).padStart(2, '0')}`;
+  if (dom === '*' && dow === '*')          return { ...def, scheduleMode: 'daily',   scheduleTime: time };
+  if (dom === '*' && /^\d$/.test(dow))    return { ...def, scheduleMode: 'weekly',  scheduleTime: time, scheduleDow: dow };
+  if (/^\d+$/.test(dom) && dow === '*')   return { ...def, scheduleMode: 'monthly', scheduleTime: time, scheduleDom: dom };
+  return { ...def, scheduleMode: 'custom', customSchedule: cron };
+}
+
+// Build a cron string from form fields.
+function buildCron(form) {
+  const [hh, mm] = (form.scheduleTime || '00:00').split(':').map(Number);
+  switch (form.scheduleMode) {
+    case 'daily':   return `${mm} ${hh} * * *`;
+    case 'weekly':  return `${mm} ${hh} * * ${form.scheduleDow}`;
+    case 'monthly': return `${mm} ${hh} ${form.scheduleDom} * *`;
+    case 'custom':  return form.customSchedule || '';
+    default:        return '';
+  }
+}
+
+// Human-readable label shown on the job card.
+function describeSchedule(cron) {
+  if (!cron) return 'Manual';
+  const parts = cron.trim().split(/\s+/);
+  if (parts.length !== 5) return cron;
+  const [min, hour, dom, , dow] = parts;
+  if (!/^\d+$/.test(min) || !/^\d+$/.test(hour)) return cron;
+  const time = `${String(+hour).padStart(2, '0')}:${String(+min).padStart(2, '0')}`;
+  if (dom === '*' && dow === '*')        return `Daily at ${time}`;
+  if (dom === '*' && /^\d$/.test(dow))  return `Weekly on ${DAYS[+dow]} at ${time}`;
+  if (/^\d+$/.test(dom) && dow === '*') return `Monthly on day ${dom} at ${time}`;
+  return cron;
+}
 
 const EMPTY_FORM = {
   name: '', type: 'mirror',
   sourceRemote: '', sourcePath: '', destRemote: '', destPath: '',
-  schedule: '', customSchedule: '', enabled: true,
+  scheduleMode: 'manual', scheduleTime: '02:00',
+  scheduleDow: '0', scheduleDom: '1', customSchedule: '',
+  enabled: true,
 };
 
 function fmtElapsed(startTime) {
@@ -75,13 +109,11 @@ export default function JobManager() {
 
   const openEdit = (job) => {
     setEditing(job.id);
-    const preset = SCHEDULES.find(s => s.value === job.schedule && s.value !== 'custom');
     setForm({
       name: job.name, type: job.type,
       sourceRemote: job.sourceRemote, sourcePath: job.sourcePath || '',
       destRemote: job.destRemote,     destPath: job.destPath || '',
-      schedule: preset ? job.schedule : 'custom',
-      customSchedule: preset ? '' : (job.schedule || ''),
+      ...parseCron(job.schedule),
       enabled: job.enabled,
     });
     setError(''); setShowForm(true);
@@ -91,7 +123,7 @@ export default function JobManager() {
     if (!form.name.trim()) return setError('Job name is required');
     if (!form.sourceRemote || !form.destRemote) return setError('Source and destination remotes are required');
     setSaving(true); setError('');
-    const schedule = form.schedule === 'custom' ? form.customSchedule : form.schedule;
+    const schedule = buildCron(form);
     const payload = {
       name: form.name.trim(), type: form.type,
       sourceRemote: form.sourceRemote, sourcePath: form.sourcePath,
@@ -152,10 +184,7 @@ export default function JobManager() {
 
   const set = (key, value) => setForm(f => ({ ...f, [key]: value }));
 
-  const scheduleLabel = (job) => {
-    const preset = SCHEDULES.find(s => s.value === job.schedule && s.value !== '');
-    return job.schedule ? (preset?.label || job.schedule) : 'Manual';
-  };
+  const scheduleLabel = (job) => describeSchedule(job.schedule);
 
   const anyRunning = jobList.some(j => j.status === 'running' || j.simulating);
 
@@ -370,11 +399,41 @@ export default function JobManager() {
 
             <div className="field">
               <label>Schedule</label>
-              <select value={form.schedule} onChange={e => set('schedule', e.target.value)}>
-                {SCHEDULES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+              <select value={form.scheduleMode} onChange={e => set('scheduleMode', e.target.value)}>
+                <option value="manual">Manual only</option>
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+                <option value="monthly">Monthly</option>
+                <option value="custom">Custom cron…</option>
               </select>
             </div>
-            {form.schedule === 'custom' && (
+            {(form.scheduleMode === 'daily' || form.scheduleMode === 'weekly' || form.scheduleMode === 'monthly') && (
+              <div style={{ display: 'grid', gridTemplateColumns: form.scheduleMode === 'manual' ? '1fr' : 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
+                {form.scheduleMode === 'weekly' && (
+                  <div className="field">
+                    <label>Day of Week</label>
+                    <select value={form.scheduleDow} onChange={e => set('scheduleDow', e.target.value)}>
+                      {DAYS.map((d, i) => <option key={i} value={String(i)}>{d}</option>)}
+                    </select>
+                  </div>
+                )}
+                {form.scheduleMode === 'monthly' && (
+                  <div className="field">
+                    <label>Day of Month</label>
+                    <select value={form.scheduleDom} onChange={e => set('scheduleDom', e.target.value)}>
+                      {Array.from({ length: 31 }, (_, i) => (
+                        <option key={i + 1} value={String(i + 1)}>{i + 1}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                <div className="field">
+                  <label>Time</label>
+                  <input type="time" value={form.scheduleTime} onChange={e => set('scheduleTime', e.target.value)} />
+                </div>
+              </div>
+            )}
+            {form.scheduleMode === 'custom' && (
               <div className="field">
                 <label>Cron Expression</label>
                 <input value={form.customSchedule} onChange={e => set('customSchedule', e.target.value)} placeholder="0 2 * * *" />
