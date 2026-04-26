@@ -38,7 +38,11 @@ function listRemotes() {
   }
 }
 
+const SAFE_IDENT = /^[A-Za-z0-9_-]+$/;
+
 function addRemote(name, type, config) {
+  if (!SAFE_IDENT.test(name)) throw new Error('Remote name may only contain letters, digits, hyphens and underscores');
+  if (!SAFE_IDENT.test(type)) throw new Error('Remote type may only contain letters, digits, hyphens and underscores');
   ensureConf();
   // Save credentials (including type) to the encrypted store as source of truth.
   saveCredentials(name, { type, ...config });
@@ -46,6 +50,8 @@ function addRemote(name, type, config) {
   let entry = `\n[${name}]\ntype = ${type}\n`;
   for (const [key, value] of Object.entries(config)) {
     if (!value) continue;
+    if (!SAFE_IDENT.test(key)) throw new Error(`Invalid config key: ${key}`);
+    if (/[\r\n]/.test(String(value))) throw new Error(`Config value for '${key}' must not contain newlines`);
     if (key === 'pass') {
       const obscured = execFileSync('rclone', ['obscure', value], { env: env() }).toString().trim();
       entry += `pass = ${obscured}\n`;
