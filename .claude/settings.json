@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git fetch *)",
+      "Read(//c/Users/flclk/Documents/Projects/**)",
+      "Read(//c/Users/flclk/Documents/**)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\flclk\\Documents\\Projects"
+    ]
+  }
+}
