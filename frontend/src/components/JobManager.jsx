@@ -46,6 +46,7 @@ export default function JobManager() {
   const [reportFile, setReportFile] = useState('');
   const [browser,    setBrowser]    = useState(null);
   const [now,        setNow]        = useState(Date.now());
+  const [confirmJob, setConfirmJob] = useState(null);
 
   const loadJobs    = useCallback(() => jobsApi.list().then(setJobList), []);
   const loadRemotes = useCallback(() => remotesApi.list().then(setRemoteList), []);
@@ -124,8 +125,8 @@ export default function JobManager() {
   };
 
   const removeJob = async (id) => {
-    if (!confirm('Delete this job?')) return;
     await jobsApi.remove(id);
+    setConfirmJob(null);
     loadJobs();
   };
 
@@ -280,12 +281,28 @@ export default function JobManager() {
                     <button className="btn-ghost btn-sm" onClick={() => openReports(job)}>Report</button>
                     <button className="btn-ghost btn-sm" onClick={() => openLogs(job)}>Logs</button>
                     <button className="btn-ghost btn-sm" onClick={() => openEdit(job)} disabled={isBusy}>Edit</button>
-                    <button className="btn-danger btn-sm" onClick={() => removeJob(job.id)}>Delete</button>
+                    <button className="btn-danger btn-sm" onClick={() => setConfirmJob(job.id)}>Delete</button>
                   </div>
                 </div>
               </div>
             );
           })}
+        </div>
+      )}
+
+      {confirmJob && (
+        <div className="modal-backdrop" onClick={e => e.target === e.currentTarget && setConfirmJob(null)}>
+          <div className="modal">
+            <div className="modal-header">
+              <h2>Delete Job</h2>
+              <button className="modal-close" onClick={() => setConfirmJob(null)}>×</button>
+            </div>
+            <p>Delete this job? This cannot be undone.</p>
+            <div className="modal-footer">
+              <button className="btn-ghost" onClick={() => setConfirmJob(null)}>Cancel</button>
+              <button className="btn-danger" onClick={() => removeJob(confirmJob)}>Delete</button>
+            </div>
+          </div>
         </div>
       )}
 

@@ -37,11 +37,12 @@ const TYPES = {
 };
 
 export default function RemoteManager() {
-  const [list, setList]       = useState([]);
-  const [showForm, setShowForm] = useState(false);
-  const [form, setForm]       = useState({ name: '', type: 'smb', config: {} });
-  const [error, setError]     = useState('');
-  const [saving, setSaving]   = useState(false);
+  const [list, setList]         = useState([]);
+  const [showForm, setShowForm]   = useState(false);
+  const [form, setForm]         = useState({ name: '', type: 'smb', config: {} });
+  const [error, setError]       = useState('');
+  const [saving, setSaving]     = useState(false);
+  const [confirmRemote, setConfirmRemote] = useState(null);
 
   const load = () => api.list().then(setList);
   useEffect(() => { load(); }, []);
@@ -61,8 +62,8 @@ export default function RemoteManager() {
   };
 
   const remove = async (name) => {
-    if (!confirm(`Remove remote "${name}"?`)) return;
     await api.remove(name);
+    setConfirmRemote(null);
     load();
   };
 
@@ -84,9 +85,25 @@ export default function RemoteManager() {
           {list.map(name => (
             <div key={name} className="card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontWeight: 500 }}>{name}</span>
-              <button className="btn-danger btn-sm" onClick={() => remove(name)}>Remove</button>
+              <button className="btn-danger btn-sm" onClick={() => setConfirmRemote(name)}>Remove</button>
             </div>
           ))}
+        </div>
+      )}
+
+      {confirmRemote && (
+        <div className="modal-backdrop" onClick={e => e.target === e.currentTarget && setConfirmRemote(null)}>
+          <div className="modal">
+            <div className="modal-header">
+              <h2>Remove Remote</h2>
+              <button className="modal-close" onClick={() => setConfirmRemote(null)}>×</button>
+            </div>
+            <p>Remove <strong>{confirmRemote}</strong>? This cannot be undone.</p>
+            <div className="modal-footer">
+              <button className="btn-ghost" onClick={() => setConfirmRemote(null)}>Cancel</button>
+              <button className="btn-danger" onClick={() => remove(confirmRemote)}>Remove</button>
+            </div>
+          </div>
         </div>
       )}
 
