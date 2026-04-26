@@ -481,7 +481,11 @@ export default function JobManager() {
                 <div className="field">
                   <label>Run</label>
                   <select value={reportFile} onChange={e => setReportFile(e.target.value)}>
-                    {reportFiles.map(f => <option key={f} value={f}>{f.split('-').slice(1).join('-').replace('.html', '')}</option>)}
+                    {reportFiles.map(f => {
+                      const isSim = f.startsWith('sim-');
+                      const ts = f.replace(/^sim-/, '').replace(`${reportJob.id}-`, '').replace('.html', '');
+                      return <option key={f} value={f}>{isSim ? `[Simulation] ${ts}` : ts}</option>;
+                    })}
                   </select>
                 </div>
                 <iframe
