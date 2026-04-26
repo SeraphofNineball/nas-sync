@@ -1,4 +1,5 @@
 const cron = require('node-cron');
+const path = require('path');
 const { readJobs, writeJobs } = require('./store');
 const { runJob, summarizeLog, runIntegrityCheck, generateReport, getJobStats } = require('./rclone');
 
@@ -38,7 +39,7 @@ async function executeJob(jobId) {
         catch (e) { integrity = { ok: false, error: e.message, matching: 0, differences: 0, missing: 0, errors: 0, exitCode: -1 }; }
       }
       const reportFile = generateReport(job, logFile, summary, integrity, blob);
-      job.lastReport = require('path').basename(reportFile);
+      job.lastReport = path.basename(reportFile);
       job.lastSummary = {
         copied: summary.copied.length,
         deleted: summary.deleted.length,
@@ -54,6 +55,59 @@ async function executeJob(jobId) {
 
   job.lastRun = new Date().toISOString();
   writeJobs(jobs);
+}
+
+async function simulateJob(jobId) {
+  const jobs = readJobs();
+  const job = jobs.find(j => j.id === jobId);
+  if (!job) return;
+  if (job.status === 'running' || job.simulating) return;
+
+  job.simulating = true;
+  writeJobs(jobs);
+
+  let logFile;
+  try {
+    const result = await runJob(job, { dryRun: true });
+    logFile = result.logFile;
+  } catch (err) {
+    const blob = getJobStats(jobId);
+    if (blob && blob.logFile) logFile = blob.logFile;
+    job.lastSimulationError = err.message;
+  }
+
+  try {
+    const blob = getJobStats(jobId);
+    if (blob && logFile) {
+      const summary = summarizeLog(logFile);
+      const reportFile = generateReport(job, logFile, summary, null, blob);
+      job.lastSimulation = {
+        report: path.basename(reportFile),
+        ranAt: new Date().toISOString(),
+        wouldCopy:   summary.copied.length,
+        wouldDelete: summary.deleted.length,
+        wouldUpdate: summary.updated.length,
+        errors:      summary.errors.length,
+      };
+    }
+  } catch (e) {
+    job.lastSimulationError = (job.lastSimulationError ? job.lastSimulationError + ' · ' : '')
+      + 'Sim report failed: ' + e.message;
+  }
+
+  job.simulating = false;
+  // Persist by re-reading + merging in case the user edited the job mid-sim
+  const fresh = readJobs();
+  const idx = fresh.findIndex(j => j.id === jobId);
+  if (idx !== -1) {
+    fresh[idx] = {
+      ...fresh[idx],
+      simulating: false,
+      lastSimulation: job.lastSimulation,
+      lastSimulationError: job.lastSimulationError,
+    };
+    writeJobs(fresh);
+  }
 }
 
 function scheduleJob(job) {
@@ -76,9 +130,13 @@ function initScheduler() {
       job.lastError = 'Interrupted — server was restarted';
       dirty = true;
     }
+    if (job.simulating) {
+      job.simulating = false;
+      dirty = true;
+    }
   });
   if (dirty) writeJobs(jobs);
   jobs.forEach(scheduleJob);
 }
 
-module.exports = { scheduleJob, unscheduleJob, executeJob, initScheduler };
+module.exports = { scheduleJob, unscheduleJob, executeJob, simulateJob, initScheduler };

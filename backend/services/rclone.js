@@ -120,17 +120,19 @@ function parseStats(text) {
 }
 
 // Counts copied / deleted / updated / errored entries from an rclone log file.
+// Handles both real-run lines (": Copied") and dry-run lines
+// (": Skipped copy as --dry-run is set").
 function summarizeLog(logFile) {
   const result = { copied: [], deleted: [], updated: [], errors: [] };
   if (!fs.existsSync(logFile)) return result;
   const text = fs.readFileSync(logFile, 'utf8');
   for (const raw of text.split('\n')) {
     const line = raw.replace(/\x1b\[[0-9;]*[mGKHF]/g, '');
-    let m = line.match(/INFO\s*:\s+(.+?):\s+Copied\b/);
+    let m = line.match(/(?:INFO|NOTICE)\s*:\s+(.+?):\s+(?:Copied\b|Skipped copy as --dry-run)/);
     if (m) { result.copied.push(m[1]); continue; }
-    m = line.match(/INFO\s*:\s+(.+?):\s+Deleted\b/);
+    m = line.match(/(?:INFO|NOTICE)\s*:\s+(.+?):\s+(?:Deleted\b|Skipped delete as --dry-run)/);
     if (m) { result.deleted.push(m[1]); continue; }
-    m = line.match(/INFO\s*:\s+(.+?):\s+Updated\b/);
+    m = line.match(/(?:INFO|NOTICE)\s*:\s+(.+?):\s+(?:Updated\b|Skipped update as --dry-run)/);
     if (m) { result.updated.push(m[1]); continue; }
     m = line.match(/ERROR\s*:\s+(.+?):\s+(.+)/);
     if (m) result.errors.push({ file: m[1], message: m[2] });
@@ -138,10 +140,12 @@ function summarizeLog(logFile) {
   return result;
 }
 
-function runJob(job) {
+function runJob(job, opts = {}) {
+  const { dryRun = false } = opts;
   fs.mkdirSync(LOGS_DIR, { recursive: true });
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const logFile = path.join(LOGS_DIR, `${job.id}-${timestamp}.log`);
+  const prefix = dryRun ? 'sim-' : '';
+  const logFile = path.join(LOGS_DIR, `${prefix}${job.id}-${timestamp}.log`);
   const logStream = fs.createWriteStream(logFile);
 
   const src = `${job.sourceRemote}:${job.sourcePath || ''}`;
@@ -157,10 +161,11 @@ function runJob(job) {
     baseArgs = ['sync', src, dst, '--backup-dir', versionsDir];
   }
   const args = [...baseArgs, '--log-level', 'INFO', '--stats', '2s', '--stats-one-line=false'];
+  if (dryRun) args.push('--dry-run');
 
   const startTime = Date.now();
-  jobProgress[job.id] = { percent: 0, transferred: '', total: '', speed: '', eta: '', startTime };
-  jobStats[job.id] = { logFile, src, dst, timestamp, startTime };
+  jobProgress[job.id] = { percent: 0, transferred: '', total: '', speed: '', eta: '', startTime, simulation: dryRun };
+  jobStats[job.id] = { logFile, src, dst, timestamp, startTime, simulation: dryRun };
 
   return new Promise((resolve, reject) => {
     const proc = spawn('rclone', args, { env: env() });
@@ -278,7 +283,10 @@ function esc(s) {
 function generateReport(job, logFile, summary, integrity, statsBlob) {
   fs.mkdirSync(REPORTS_DIR, { recursive: true });
   const ts = new Date(statsBlob.startTime).toISOString().replace(/[:.]/g, '-');
-  const reportFile = path.join(REPORTS_DIR, `${job.id}-${ts}.html`);
+  const isSim = !!statsBlob.simulation;
+  const prefix = isSim ? 'sim-' : '';
+  const reportFile = path.join(REPORTS_DIR, `${prefix}${job.id}-${ts}.html`);
+  const verb = isSim ? 'Would ' : '';
 
   const fp = statsBlob.finalProgress || {};
   const startISO = new Date(statsBlob.startTime).toLocaleString();
@@ -334,14 +342,15 @@ function generateReport(job, logFile, summary, integrity, statsBlob) {
   meter { width: 100%; height: 20px; }
 </style></head><body>
 <table id="rcorners" border="0" cellspacing="0" cellpadding="0"><tbody><tr>
-<td align="left" valign="middle" style="padding: 15px"><font color="#000000" size="5"><strong>NAS Sync Report</strong><br><strong>${esc(job.name)}</strong></font></td>
+<td align="left" valign="middle" style="padding: 15px"><font color="#000000" size="5"><strong>NAS Sync ${isSim ? 'Simulation' : 'Report'}</strong><br><strong>${esc(job.name)}</strong></font></td>
 <td align="right" valign="middle" style="padding: 15px"><font color="#555555" size="4"><small>${esc(startISO)}<br>v1.0</small></font></td>
 </tr></tbody></table>
+${isSim ? `<div style="margin-top:10px;padding:12px;border-radius:8px;background:#FFF3CD;border:2px solid #F0AD4E;color:#664500;font-weight:bold;font-size:14px">⚠ DRY-RUN SIMULATION — no files were actually modified. The lists below show what <em>would</em> happen if this job ran.</div>` : ''}
 <br>
 <div class="topnav">
-  <a href="#copied">Copied (${copiedCount.toLocaleString()})</a>
-  <a href="#deleted">Deleted (${deletedCount.toLocaleString()})</a>
-  <a href="#updated">Updated (${updatedCount.toLocaleString()})</a>
+  <a href="#copied">${verb}Copied (${copiedCount.toLocaleString()})</a>
+  <a href="#deleted">${verb}Deleted (${deletedCount.toLocaleString()})</a>
+  <a href="#updated">${verb}Updated (${updatedCount.toLocaleString()})</a>
   <a href="#errors">Errors (${errCount.toLocaleString()})</a>
 </div>
 <br>
@@ -361,14 +370,14 @@ function generateReport(job, logFile, summary, integrity, statsBlob) {
 <br>
 
 <table width="100%" border="1" cellpadding="5" cellspacing="0" bordercolor="#E3F2FD">
-<tr bgcolor="#1565C0"><td colspan="4"><strong><font color="#FFFFFF" size="3">Log Report: Run Totals</font></strong></td></tr>
-<tr><td width="22%" bgcolor="#BBDEFB"><strong><font color="#000077">Copied to Destination</font></strong></td>
+<tr bgcolor="#1565C0"><td colspan="4"><strong><font color="#FFFFFF" size="3">${isSim ? 'Simulation Totals' : 'Log Report: Run Totals'}</font></strong></td></tr>
+<tr><td width="22%" bgcolor="#BBDEFB"><strong><font color="#000077">${verb}Copied to Destination</font></strong></td>
     <td bgcolor="#FFFFFF">${copiedCount.toLocaleString()} files</td></tr>
-<tr><td bgcolor="#BBDEFB"><strong><font color="#000077">Bytes Transferred</font></strong></td>
+<tr><td bgcolor="#BBDEFB"><strong><font color="#000077">Bytes ${isSim ? 'to Transfer' : 'Transferred'}</font></strong></td>
     <td bgcolor="#FFFFFF">${esc(fp.transferred || '0')} / ${esc(fp.total || '0')}</td></tr>
-<tr><td bgcolor="#BBDEFB"><strong><font color="#000077">Deleted from Destination</font></strong></td>
+<tr><td bgcolor="#BBDEFB"><strong><font color="#000077">${verb}Deleted from Destination</font></strong></td>
     <td bgcolor="#FFFFFF">${deletedCount.toLocaleString()} files</td></tr>
-<tr><td bgcolor="#BBDEFB"><strong><font color="#000077">Updated</font></strong></td>
+<tr><td bgcolor="#BBDEFB"><strong><font color="#000077">${verb}Updated</font></strong></td>
     <td bgcolor="#FFFFFF">${updatedCount.toLocaleString()} files</td></tr>
 <tr><td bgcolor="#BBDEFB"><strong><font color="#000077">Errors</font></strong></td>
     <td bgcolor="#FFFFFF"><font color="${errCount > 0 ? '#dc2626' : '#16a34a'}">${errCount.toLocaleString()}</font></td></tr>
@@ -396,9 +405,9 @@ function generateReport(job, logFile, summary, integrity, statsBlob) {
 
 ${integSection}
 
-<a id="copied"></a>${fileList('Copied Files', '#C8E6C9', summary.copied)}
-<a id="updated"></a>${fileList('Updated Files', '#FFE0B2', summary.updated)}
-<a id="deleted"></a>${fileList('Deleted Files', '#FFCDD2', summary.deleted)}
+<a id="copied"></a>${fileList(`${verb}Copied Files`, '#C8E6C9', summary.copied)}
+<a id="updated"></a>${fileList(`${verb}Updated Files`, '#FFE0B2', summary.updated)}
+<a id="deleted"></a>${fileList(`${verb}Deleted Files`, '#FFCDD2', summary.deleted)}
 <a id="errors"></a>${summary.errors.length ? `<button class="collapsible">Errors (${summary.errors.length.toLocaleString()})</button><div class="content">
   <table width="100%" border="1" cellpadding="3" cellspacing="0" bordercolor="#FFCDD2">
     ${summary.errors.slice(0, 1000).map(e => `<tr><td bgcolor="#FFFFFF" style="font-family:monospace;font-size:12px">${esc(e.file)}</td><td bgcolor="#FFEBEE">${esc(e.message)}</td></tr>`).join('')}

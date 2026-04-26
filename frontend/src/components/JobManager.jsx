@@ -52,18 +52,18 @@ export default function JobManager() {
 
   useEffect(() => { loadJobs(); loadRemotes(); }, []);
 
-  // Poll every 3s while any job is running
+  // Poll every 3s while any job is running or simulating
   useEffect(() => {
-    const running = jobList.some(j => j.status === 'running');
-    if (!running) return;
+    const busy = jobList.some(j => j.status === 'running' || j.simulating);
+    if (!busy) return;
     const t = setTimeout(loadJobs, 3000);
     return () => clearTimeout(t);
   }, [jobList]);
 
-  // Tick elapsed timer every second while any job is running
+  // Tick elapsed timer every second while any job is running or simulating
   useEffect(() => {
-    const running = jobList.some(j => j.status === 'running');
-    if (!running) return;
+    const busy = jobList.some(j => j.status === 'running' || j.simulating);
+    if (!busy) return;
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, [jobList]);
@@ -105,6 +105,11 @@ export default function JobManager() {
 
   const runJob = async (id) => {
     await jobsApi.run(id);
+    setTimeout(loadJobs, 500);
+  };
+
+  const simulateJob = async (id) => {
+    await jobsApi.simulate(id);
     setTimeout(loadJobs, 500);
   };
 
@@ -151,7 +156,7 @@ export default function JobManager() {
     return job.schedule ? (preset?.label || job.schedule) : 'Manual';
   };
 
-  const anyRunning = jobList.some(j => j.status === 'running');
+  const anyRunning = jobList.some(j => j.status === 'running' || j.simulating);
 
   return (
     <div>
@@ -174,14 +179,18 @@ export default function JobManager() {
           {jobList.map(job => {
             const p = job.progress;
             const isRunning = job.status === 'running';
+            const isSimulating = !!job.simulating;
+            const isBusy = isRunning || isSimulating;
             const hasPercent = p && p.percent != null && p.percent > 0;
+            const badgeKind = isSimulating ? 'running' : (job.status || 'idle');
+            const badgeLabel = isSimulating ? 'simulating' : (job.status || 'idle');
             return (
               <div key={job.id} className="card">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                       <span style={{ fontWeight: 600 }}>{job.name}</span>
-                      <span className={`badge badge-${job.status || 'idle'}`}>{job.status || 'idle'}</span>
+                      <span className={`badge badge-${badgeKind}`}>{badgeLabel}</span>
                       <span style={{ fontSize: 11, color: 'var(--muted)', background: 'var(--surface2)', padding: '1px 6px', borderRadius: 4 }}>
                         {job.type}
                       </span>
@@ -199,12 +208,15 @@ export default function JobManager() {
                     )}
 
                     {/* Progress section */}
-                    {isRunning && (
+                    {isBusy && (
                       <div style={{ marginTop: 8 }}>
                         <div className={`progress-bar${hasPercent ? '' : ' progress-bar-indeterminate'}`}>
                           <div className="progress-bar-fill" style={{ width: `${hasPercent ? p.percent : 0}%` }} />
                         </div>
                         <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--muted)', marginTop: 4, flexWrap: 'wrap' }}>
+                          {isSimulating && (
+                            <span style={{ color: 'var(--warning)', fontWeight: 600 }}>DRY-RUN</span>
+                          )}
                           <span style={{ color: 'var(--text)', fontWeight: 500 }}>
                             {hasPercent ? `${p.percent}%` : 'Starting…'}
                           </span>
@@ -229,7 +241,7 @@ export default function JobManager() {
                     )}
 
                     {/* Last summary (post-run) */}
-                    {!isRunning && job.lastSummary && (
+                    {!isBusy && job.lastSummary && (
                       <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--muted)', marginTop: 6, flexWrap: 'wrap' }}>
                         <span>Copied {job.lastSummary.copied.toLocaleString()}</span>
                         <span>Deleted {job.lastSummary.deleted.toLocaleString()}</span>
@@ -244,17 +256,30 @@ export default function JobManager() {
                         )}
                       </div>
                     )}
+
+                    {/* Last simulation summary */}
+                    {!isBusy && job.lastSimulation && (
+                      <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--muted)', marginTop: 4, flexWrap: 'wrap' }}>
+                        <span style={{ color: 'var(--warning)', fontWeight: 600 }}>SIM</span>
+                        <span>Would copy {job.lastSimulation.wouldCopy.toLocaleString()}</span>
+                        <span>Would delete {job.lastSimulation.wouldDelete.toLocaleString()}</span>
+                        {job.lastSimulation.wouldUpdate > 0 && <span>Would update {job.lastSimulation.wouldUpdate.toLocaleString()}</span>}
+                      </div>
+                    )}
                   </div>
 
                   <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                    {isRunning ? (
+                    {isBusy ? (
                       <button className="btn-danger btn-sm" onClick={() => stopJob(job.id)}>Stop</button>
                     ) : (
-                      <button className="btn-ghost btn-sm" onClick={() => runJob(job.id)}>Run</button>
+                      <>
+                        <button className="btn-ghost btn-sm" onClick={() => runJob(job.id)}>Run</button>
+                        <button className="btn-ghost btn-sm" onClick={() => simulateJob(job.id)} title="Dry run — show what would change without modifying anything">Simulate</button>
+                      </>
                     )}
                     <button className="btn-ghost btn-sm" onClick={() => openReports(job)}>Report</button>
                     <button className="btn-ghost btn-sm" onClick={() => openLogs(job)}>Logs</button>
-                    <button className="btn-ghost btn-sm" onClick={() => openEdit(job)} disabled={isRunning}>Edit</button>
+                    <button className="btn-ghost btn-sm" onClick={() => openEdit(job)} disabled={isBusy}>Edit</button>
                     <button className="btn-danger btn-sm" onClick={() => removeJob(job.id)}>Delete</button>
                   </div>
                 </div>

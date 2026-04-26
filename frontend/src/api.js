@@ -23,6 +23,7 @@ export const jobs = {
   update: (id, data) => req(`/jobs/${id}`, { method: 'PUT', body: data }),
   remove: (id) => req(`/jobs/${id}`, { method: 'DELETE' }),
   run: (id) => req(`/jobs/${id}/run`, { method: 'POST' }),
+  simulate: (id) => req(`/jobs/${id}/simulate`, { method: 'POST' }),
   stop: (id) => req(`/jobs/${id}/stop`, { method: 'POST' }),
   stopAll: () => req('/jobs/stop-all', { method: 'POST' }),
 };
