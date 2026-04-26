@@ -2,7 +2,7 @@ const { execFileSync, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { DATA_DIR } = require('./store');
-const { saveCredentials, deleteCredentials, getAllCredentials, obscurePassword } = require('./credentials');
+const { saveCredentials, deleteCredentials } = require('./credentials');
 
 const RCLONE_CONF = path.join(DATA_DIR, 'rclone.conf');
 const LOGS_DIR = path.join(DATA_DIR, 'logs');
@@ -12,25 +12,8 @@ const runningProcesses = {};
 const jobProgress = {};
 const jobStats = {};
 
-// rclone env var name for a remote: uppercase, spaces/hyphens → underscores, other non-alphanumeric removed
-function rcloneEnvName(remoteName) {
-  return remoteName.toUpperCase().replace(/[\s-]/g, '_').replace(/[^A-Z0-9_]/g, '');
-}
-
-// Builds the environment for rclone subprocesses, injecting all credentials from the
-// encrypted store as RCLONE_CONFIG_<REMOTE>_<FIELD> env vars so they never touch disk.
 function env() {
-  const allCreds = getAllCredentials();
-  const extra = {};
-  for (const [name, config] of Object.entries(allCreds)) {
-    const prefix = `RCLONE_CONFIG_${rcloneEnvName(name)}_`;
-    for (const [key, value] of Object.entries(config)) {
-      if (!value) continue;
-      // rclone expects password-type fields to be obscured even when passed via env vars
-      extra[`${prefix}${key.toUpperCase()}`] = key === 'pass' ? obscurePassword(String(value)) : String(value);
-    }
-  }
-  return { ...process.env, RCLONE_CONFIG: RCLONE_CONF, ...extra };
+  return { ...process.env, RCLONE_CONFIG: RCLONE_CONF };
 }
 
 function rclone(args) {
@@ -57,10 +40,20 @@ function listRemotes() {
 
 function addRemote(name, type, config) {
   ensureConf();
-  // Store all credential fields encrypted; rclone.conf only records the type so
-  // `rclone listremotes` works. Credentials are injected at runtime via env vars.
-  saveCredentials(name, config);
-  fs.appendFileSync(RCLONE_CONF, `\n[${name}]\ntype = ${type}\n`);
+  // Save credentials (including type) to the encrypted store as source of truth.
+  saveCredentials(name, { type, ...config });
+  // Write full config to rclone.conf so rclone can use it directly without env-var merging.
+  let entry = `\n[${name}]\ntype = ${type}\n`;
+  for (const [key, value] of Object.entries(config)) {
+    if (!value) continue;
+    if (key === 'pass') {
+      const obscured = execFileSync('rclone', ['obscure', value], { env: env() }).toString().trim();
+      entry += `pass = ${obscured}\n`;
+    } else {
+      entry += `${key} = ${value}\n`;
+    }
+  }
+  fs.appendFileSync(RCLONE_CONF, entry);
 }
 
 function deleteRemote(name) {
