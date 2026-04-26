@@ -23,9 +23,8 @@ function obscurePassword(plaintext) {
   const buf = Buffer.alloc(plain.length + 1);
   buf[0] = crypto.randomBytes(1)[0];
   const offset = buf[0] % RCLONE_CRYPT_KEY.length;
-  const key = RCLONE_CRYPT_KEY.slice(offset);
   for (let i = 0; i < plain.length; i++) {
-    buf[i + 1] = plain[i] ^ key[i % key.length];
+    buf[i + 1] = plain[i] ^ RCLONE_CRYPT_KEY[(offset + i) % RCLONE_CRYPT_KEY.length];
   }
   return buf.toString('base64url');
 }
