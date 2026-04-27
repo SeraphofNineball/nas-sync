@@ -1,8 +1,9 @@
 const { execFileSync, spawn } = require('child_process');
 const fs = require('fs');
+const readline = require('readline');
 const path = require('path');
 const { DATA_DIR } = require('./store');
-const { saveCredentials, deleteCredentials } = require('./credentials');
+const { saveCredentials, deleteCredentials, obscurePassword } = require('./credentials');
 
 const RCLONE_CONF = path.join(DATA_DIR, 'rclone.conf');
 const LOGS_DIR = path.join(DATA_DIR, 'logs');
@@ -44,20 +45,17 @@ function addRemote(name, type, config) {
   if (!SAFE_IDENT.test(name)) throw new Error('Remote name may only contain letters, digits, hyphens and underscores');
   if (!SAFE_IDENT.test(type)) throw new Error('Remote type may only contain letters, digits, hyphens and underscores');
   ensureConf();
-  // Save credentials (including type) to the encrypted store as source of truth.
   saveCredentials(name, { type, ...config });
-  // Write full config to rclone.conf so rclone can use it directly without env-var merging.
   let entry = `\n[${name}]\ntype = ${type}\n`;
   for (const [key, value] of Object.entries(config)) {
     if (!value) continue;
     if (!SAFE_IDENT.test(key)) throw new Error(`Invalid config key: ${key}`);
     if (/[\r\n]/.test(String(value))) throw new Error(`Config value for '${key}' must not contain newlines`);
-    if (key === 'pass') {
-      const obscured = execFileSync('rclone', ['obscure', value], { env: env() }).toString().trim();
-      entry += `pass = ${obscured}\n`;
-    } else {
-      entry += `${key} = ${value}\n`;
-    }
+    // Use pure-JS obscurePassword instead of spawning a subprocess so the
+    // plaintext password is never visible in the OS process list.
+    entry += key === 'pass'
+      ? `pass = ${obscurePassword(value)}\n`
+      : `${key} = ${value}\n`;
   }
   fs.appendFileSync(RCLONE_CONF, entry);
 }
@@ -91,17 +89,11 @@ function checkRemote(name) {
   });
 }
 
-// Parses an rclone --stats block. rclone emits something like:
-//   Transferred:       58.456 MiB / 1.234 GiB, 5%, 1.234 MiB/s, ETA 17m23s
-//   Errors:                 0
-//   Checks:                 0 / 0, -
-//   Transferred:            5 / 100, 5%
-//   Elapsed time:        1m23.4s
+// Parses an rclone --stats block emitted to stderr.
 function parseStats(text) {
   const clean = text.replace(/\x1b\[[0-9;]*[mGKHF]/g, '');
   const out = {};
   for (const line of clean.split('\n')) {
-    // Size line: "Transferred:   58.4 MiB / 1.23 GiB, 5%, 1.2 MiB/s, ETA 17m23s"
     let m = line.match(/Transferred:\s+([\d.]+\s*[KMGTP]?i?B)\s*\/\s*([\d.]+\s*[KMGTP]?i?B)(?:,\s*(\d+)%)?(?:,\s*([\d.]+\s*\S+\/s))?(?:,\s*ETA\s+(\S+))?/);
     if (m) {
       out.transferred = m[1].trim();
@@ -111,7 +103,6 @@ function parseStats(text) {
       if (m[5]) out.eta     = m[5].trim();
       continue;
     }
-    // File-count line: "Transferred:   5 / 100, 5%"
     m = line.match(/Transferred:\s+([\d,]+)\s*\/\s*([\d,]+)(?:,\s*(\d+)%)?/);
     if (m) {
       out.files      = parseInt(m[1].replace(/,/g, ''));
@@ -133,24 +124,38 @@ function parseStats(text) {
   return Object.keys(out).length ? out : null;
 }
 
-// Counts copied / deleted / updated / errored entries from an rclone log file.
-// Handles both real-run lines (": Copied") and dry-run lines
-// (": Skipped copy as --dry-run is set").
-function summarizeLog(logFile) {
-  const result = { copied: [], deleted: [], updated: [], errors: [] };
+// Streams the log file line-by-line to avoid loading it entirely into memory.
+// Arrays are capped at 1000 entries for report rendering; *Total fields hold
+// the actual counts.
+async function summarizeLog(logFile) {
+  const result = {
+    copied: [], copiedTotal: 0,
+    deleted: [], deletedTotal: 0,
+    updated: [], updatedTotal: 0,
+    errors: [], errorsTotal: 0,
+  };
   if (!fs.existsSync(logFile)) return result;
-  const text = fs.readFileSync(logFile, 'utf8');
-  for (const raw of text.split('\n')) {
-    const line = raw.replace(/\x1b\[[0-9;]*[mGKHF]/g, '');
-    let m = line.match(/(?:INFO|NOTICE)\s*:\s+(.+?):\s+(?:Copied\b|Skipped copy as --dry-run)/);
-    if (m) { result.copied.push(m[1]); continue; }
-    m = line.match(/(?:INFO|NOTICE)\s*:\s+(.+?):\s+(?:Deleted\b|Skipped delete as --dry-run)/);
-    if (m) { result.deleted.push(m[1]); continue; }
-    m = line.match(/(?:INFO|NOTICE)\s*:\s+(.+?):\s+(?:Updated\b|Skipped update as --dry-run)/);
-    if (m) { result.updated.push(m[1]); continue; }
-    m = line.match(/ERROR\s*:\s+(.+?):\s+(.+)/);
-    if (m) result.errors.push({ file: m[1], message: m[2] });
-  }
+
+  await new Promise((resolve, reject) => {
+    const rl = readline.createInterface({
+      input: fs.createReadStream(logFile, { encoding: 'utf8' }),
+      crlfDelay: Infinity,
+    });
+    rl.on('line', raw => {
+      const line = raw.replace(/\x1b\[[0-9;]*[mGKHF]/g, '');
+      let m = line.match(/(?:INFO|NOTICE)\s*:\s+(.+?):\s+(?:Copied\b|Skipped copy as --dry-run)/);
+      if (m) { result.copiedTotal++; if (result.copied.length < 1000) result.copied.push(m[1]); return; }
+      m = line.match(/(?:INFO|NOTICE)\s*:\s+(.+?):\s+(?:Deleted\b|Skipped delete as --dry-run)/);
+      if (m) { result.deletedTotal++; if (result.deleted.length < 1000) result.deleted.push(m[1]); return; }
+      m = line.match(/(?:INFO|NOTICE)\s*:\s+(.+?):\s+(?:Updated\b|Skipped update as --dry-run)/);
+      if (m) { result.updatedTotal++; if (result.updated.length < 1000) result.updated.push(m[1]); return; }
+      m = line.match(/ERROR\s*:\s+(.+?):\s+(.+)/);
+      if (m) { result.errorsTotal++; if (result.errors.length < 1000) result.errors.push({ file: m[1], message: m[2] }); }
+    });
+    rl.on('close', resolve);
+    rl.on('error', reject);
+  });
+
   return result;
 }
 
@@ -240,9 +245,15 @@ function getJobStats(jobId) {
   return jobStats[jobId] || null;
 }
 
-// Runs `rclone check` to verify the destination matches the source. SMB remotes
-// don't expose hashes so we always pass --size-only. For sync (copy) jobs we
-// pass --one-way so files only on dest don't count as differences.
+// Called by the scheduler after it has finished reading jobProgress/jobStats
+// so those maps don't accumulate indefinitely across many scheduled runs.
+function cleanupJobState(jobId) {
+  delete jobProgress[jobId];
+  delete jobStats[jobId];
+}
+
+// Collects stderr/stdout into capped Buffer arrays to avoid unbounded string
+// concatenation and potential OOM for very large rclone check output.
 function runIntegrityCheck(job) {
   const src = `${job.sourceRemote}:${job.sourcePath || ''}`;
   const dst = `${job.destRemote}:${job.destPath || ''}`;
@@ -250,14 +261,19 @@ function runIntegrityCheck(job) {
   if (job.type === 'sync') args.push('--one-way');
 
   return new Promise(resolve => {
-    let stderr = '';
-    let stdout = '';
+    const chunks = [];
+    let totalLen = 0;
+    const MAX_BYTES = 4 * 1024 * 1024; // 4 MB cap — ample for any realistic check output
+
+    const collect = (d) => {
+      if (totalLen < MAX_BYTES) { chunks.push(d); totalLen += d.length; }
+    };
+
     const proc = spawn('rclone', args, { env: env() });
-    proc.stderr.on('data', d => { stderr += d.toString(); });
-    proc.stdout.on('data', d => { stdout += d.toString(); });
+    proc.stderr.on('data', collect);
+    proc.stdout.on('data', collect);
     proc.on('close', code => {
-      const text = stderr + '\n' + stdout;
-      const clean = text.replace(/\x1b\[[0-9;]*[mGKHF]/g, '');
+      const clean = Buffer.concat(chunks).toString('utf8').replace(/\x1b\[[0-9;]*[mGKHF]/g, '');
       const num = (re) => { const m = clean.match(re); return m ? parseInt(m[1].replace(/,/g, '')) : 0; };
       resolve({
         ok: code === 0,
@@ -293,8 +309,10 @@ function esc(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-// Generates a SyncBackPro-flavored HTML report. Returns the absolute path.
-function generateReport(job, logFile, summary, integrity, statsBlob) {
+// Async so fs.promises.writeFile doesn't block the event loop for large reports.
+// summary shape: { copied[], copiedTotal, deleted[], deletedTotal,
+//                  updated[], updatedTotal, errors[], errorsTotal }
+async function generateReport(job, logFile, summary, integrity, statsBlob) {
   fs.mkdirSync(REPORTS_DIR, { recursive: true });
   const ts = new Date(statsBlob.startTime).toISOString().replace(/[:.]/g, '-');
   const isSim = !!statsBlob.simulation;
@@ -311,11 +329,11 @@ function generateReport(job, logFile, summary, integrity, statsBlob) {
                  : 'Failed';
   const resultColor = statsBlob.result === 'success' ? '#16a34a'
                     : statsBlob.result === 'stopped' ? '#d97706' : '#dc2626';
-  const totalScanned = (fp.totalFiles || 0);
-  const copiedCount  = summary.copied.length;
-  const deletedCount = summary.deleted.length;
-  const updatedCount = summary.updated.length;
-  const errCount     = summary.errors.length;
+  const totalScanned = fp.totalFiles || 0;
+  const copiedCount  = summary.copiedTotal;
+  const deletedCount = summary.deletedTotal;
+  const updatedCount = summary.updatedTotal;
+  const errCount     = summary.errorsTotal;
 
   const integSection = integrity ? `
   <table width="100%" border="1" cellpadding="5" cellspacing="0" bordercolor="#E3F2FD">
@@ -329,11 +347,12 @@ function generateReport(job, logFile, summary, integrity, statsBlob) {
   <tr><td bgcolor="#BBDEFB"><strong>Mode</strong></td><td bgcolor="#FFFFFF">--size-only${job.type === 'sync' ? ' --one-way' : ''}</td></tr>
   </table><br>` : '';
 
-  const fileList = (title, color, items) => {
-    if (!items.length) return '';
-    const rows = items.slice(0, 1000).map(f => `<tr><td bgcolor="#FFFFFF" style="font-family:monospace;font-size:12px">${esc(f)}</td></tr>`).join('');
-    const more = items.length > 1000 ? `<tr><td bgcolor="#FFFFE0">… ${items.length - 1000} more (see log file)</td></tr>` : '';
-    return `<button class="collapsible">${title} (${items.length.toLocaleString()})</button><div class="content">
+  // items is already capped at 1000; total is the real count.
+  const fileList = (title, color, items, total) => {
+    if (!total) return '';
+    const rows = items.map(f => `<tr><td bgcolor="#FFFFFF" style="font-family:monospace;font-size:12px">${esc(f)}</td></tr>`).join('');
+    const more = total > items.length ? `<tr><td bgcolor="#FFFFE0">… ${(total - items.length).toLocaleString()} more (see log file)</td></tr>` : '';
+    return `<button class="collapsible">${title} (${total.toLocaleString()})</button><div class="content">
       <table width="100%" border="1" cellpadding="3" cellspacing="0" bordercolor="${color}">${rows}${more}</table></div><br>`;
   };
 
@@ -359,7 +378,7 @@ function generateReport(job, logFile, summary, integrity, statsBlob) {
 <td align="left" valign="middle" style="padding: 15px"><font color="#000000" size="5"><strong>NAS Sync ${isSim ? 'Simulation' : 'Report'}</strong><br><strong>${esc(job.name)}</strong></font></td>
 <td align="right" valign="middle" style="padding: 15px"><font color="#555555" size="4"><small>${esc(startISO)}<br>v1.0</small></font></td>
 </tr></tbody></table>
-${isSim ? `<div style="margin-top:10px;padding:12px;border-radius:8px;background:#FFF3CD;border:2px solid #F0AD4E;color:#664500;font-weight:bold;font-size:14px">⚠ DRY-RUN SIMULATION — no files were actually modified. The lists below show what <em>would</em> happen if this job ran.</div>` : ''}
+${isSim ? `<div style="margin-top:10px;padding:12px;border-radius:8px;background:#FFF3CD;border:2px solid #F0AD4E;color:#664500;font-weight:bold;font-size:14px">&#9888; DRY-RUN SIMULATION &mdash; no files were actually modified. The lists below show what <em>would</em> happen if this job ran.</div>` : ''}
 <br>
 <div class="topnav">
   <a href="#copied">${verb}Copied (${copiedCount.toLocaleString()})</a>
@@ -374,7 +393,7 @@ ${isSim ? `<div style="margin-top:10px;padding:12px;border-radius:8px;background
 <tr><td width="22%" bgcolor="#BBDEFB"><strong><font color="#000077">Profile Name</font></strong></td><td width="28%" bgcolor="#FFFFFF">${esc(job.name)}</td>
     <td width="22%" bgcolor="#BBDEFB"><strong><font color="#000077">Type</font></strong></td><td bgcolor="#FFFFFF">${esc(job.type)}</td></tr>
 <tr><td bgcolor="#BBDEFB"><strong><font color="#000077">Result</font></strong></td>
-    <td colspan="3" bgcolor="#FFFFFF"><font color="${resultColor}"><strong>${result}</strong></font>${statsBlob.error ? ' — ' + esc(statsBlob.error) : ''}</td></tr>
+    <td colspan="3" bgcolor="#FFFFFF"><font color="${resultColor}"><strong>${result}</strong></font>${statsBlob.error ? ' &mdash; ' + esc(statsBlob.error) : ''}</td></tr>
 <tr><td bgcolor="#BBDEFB"><strong><font color="#000077">Source</font></strong></td><td colspan="3" bgcolor="#FFFFFF">${esc(statsBlob.src)}</td></tr>
 <tr><td bgcolor="#BBDEFB"><strong><font color="#000077">Destination</font></strong></td><td colspan="3" bgcolor="#FFFFFF">${esc(statsBlob.dst)}</td></tr>
 <tr><td bgcolor="#BBDEFB"><strong><font color="#000077">Start Time</font></strong></td><td bgcolor="#FFFFFF">${esc(startISO)}</td>
@@ -396,7 +415,7 @@ ${isSim ? `<div style="margin-top:10px;padding:12px;border-radius:8px;background
 <tr><td bgcolor="#BBDEFB"><strong><font color="#000077">Errors</font></strong></td>
     <td bgcolor="#FFFFFF"><font color="${errCount > 0 ? '#dc2626' : '#16a34a'}">${errCount.toLocaleString()}</font></td></tr>
 <tr><td bgcolor="#BBDEFB"><strong><font color="#000077">Average Speed</font></strong></td>
-    <td bgcolor="#FFFFFF">${esc(fp.speed || '—')}</td></tr>
+    <td bgcolor="#FFFFFF">${esc(fp.speed || '&mdash;')}</td></tr>
 </table>
 <br>
 
@@ -419,12 +438,13 @@ ${isSim ? `<div style="margin-top:10px;padding:12px;border-radius:8px;background
 
 ${integSection}
 
-<a id="copied"></a>${fileList(`${verb}Copied Files`, '#C8E6C9', summary.copied)}
-<a id="updated"></a>${fileList(`${verb}Updated Files`, '#FFE0B2', summary.updated)}
-<a id="deleted"></a>${fileList(`${verb}Deleted Files`, '#FFCDD2', summary.deleted)}
-<a id="errors"></a>${summary.errors.length ? `<button class="collapsible">Errors (${summary.errors.length.toLocaleString()})</button><div class="content">
+<a id="copied"></a>${fileList(`${verb}Copied Files`, '#C8E6C9', summary.copied, summary.copiedTotal)}
+<a id="updated"></a>${fileList(`${verb}Updated Files`, '#FFE0B2', summary.updated, summary.updatedTotal)}
+<a id="deleted"></a>${fileList(`${verb}Deleted Files`, '#FFCDD2', summary.deleted, summary.deletedTotal)}
+<a id="errors"></a>${errCount ? `<button class="collapsible">Errors (${errCount.toLocaleString()})</button><div class="content">
   <table width="100%" border="1" cellpadding="3" cellspacing="0" bordercolor="#FFCDD2">
-    ${summary.errors.slice(0, 1000).map(e => `<tr><td bgcolor="#FFFFFF" style="font-family:monospace;font-size:12px">${esc(e.file)}</td><td bgcolor="#FFEBEE">${esc(e.message)}</td></tr>`).join('')}
+    ${summary.errors.map(e => `<tr><td bgcolor="#FFFFFF" style="font-family:monospace;font-size:12px">${esc(e.file)}</td><td bgcolor="#FFEBEE">${esc(e.message)}</td></tr>`).join('')}
+    ${errCount > summary.errors.length ? `<tr><td colspan="2" bgcolor="#FFFFE0">&hellip; ${(errCount - summary.errors.length).toLocaleString()} more (see log file)</td></tr>` : ''}
   </table></div><br>` : ''}
 
 <script>
@@ -438,7 +458,7 @@ ${integSection}
 </script>
 </body></html>`;
 
-  fs.writeFileSync(reportFile, html);
+  await fs.promises.writeFile(reportFile, html);
   return reportFile;
 }
 
@@ -449,9 +469,27 @@ function listReports(jobId) {
     .sort().reverse();
 }
 
+// Deletes log and report files beyond the most recent keepN for a given job,
+// keeping disk usage bounded for long-running scheduled jobs.
+function pruneOldFiles(jobId, keepN = 20) {
+  for (const dir of [LOGS_DIR, REPORTS_DIR]) {
+    if (!fs.existsSync(dir)) continue;
+    for (const prefix of [`${jobId}-`, `sim-${jobId}-`]) {
+      const files = fs.readdirSync(dir)
+        .filter(f => f.startsWith(prefix))
+        .sort().reverse();
+      files.slice(keepN).forEach(f => {
+        try { fs.unlinkSync(path.join(dir, f)); } catch { /* ignore */ }
+      });
+    }
+  }
+}
+
 module.exports = {
   listRemotes, addRemote, deleteRemote, browseRemote,
-  runJob, stopJob, stopAllJobs, getProgress, getJobStats, checkRemote,
+  runJob, stopJob, stopAllJobs, getProgress, getJobStats, cleanupJobState,
+  checkRemote,
   summarizeLog, runIntegrityCheck, generateReport, listReports,
+  pruneOldFiles,
   LOGS_DIR, REPORTS_DIR,
 };

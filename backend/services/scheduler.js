@@ -1,112 +1,147 @@
 const cron = require('node-cron');
 const path = require('path');
 const { readJobs, writeJobs } = require('./store');
-const { runJob, summarizeLog, runIntegrityCheck, generateReport, getJobStats } = require('./rclone');
+const { runJob, summarizeLog, runIntegrityCheck, generateReport, getJobStats, cleanupJobState, pruneOldFiles } = require('./rclone');
 
 const active = {};
 
+// Tracks job IDs that are currently executing (real run or simulation).
+// Prevents the same job from running more than once simultaneously even if the
+// cron interval is shorter than the job's runtime.
+const executing = new Set();
+
 async function executeJob(jobId) {
-  const jobs = readJobs();
-  const job = jobs.find(j => j.id === jobId);
-  if (!job) return;
+  if (executing.has(jobId)) return;
+  executing.add(jobId);
 
-  job.status = 'running';
-  job.lastRun = new Date().toISOString();
-  job.lastError = '';
-  writeJobs(jobs);
-
-  let logFile;
   try {
-    const result = await runJob(job);
-    logFile = result.logFile;
-    job.status = 'success';
-  } catch (err) {
-    job.status = 'failed';
-    job.lastError = err.message;
-    const blob = getJobStats(jobId);
-    if (blob && blob.logFile) logFile = blob.logFile;
-  }
+    const jobs = readJobs();
+    const job = jobs.find(j => j.id === jobId);
+    if (!job) return;
 
-  // Generate completion report (success, stopped, or failed)
-  try {
-    const blob = getJobStats(jobId);
-    if (blob && logFile) {
-      const summary = summarizeLog(logFile);
-      let integrity = null;
-      // Only run integrity check if the job actually finished successfully
-      if (job.status === 'success') {
-        try { integrity = await runIntegrityCheck(job); }
-        catch (e) { integrity = { ok: false, error: e.message, matching: 0, differences: 0, missing: 0, errors: 0, exitCode: -1 }; }
-      }
-      const reportFile = generateReport(job, logFile, summary, integrity, blob);
-      job.lastReport = path.basename(reportFile);
-      job.lastSummary = {
-        copied: summary.copied.length,
-        deleted: summary.deleted.length,
-        updated: summary.updated.length,
-        errors: summary.errors.length,
-        integrity: integrity ? { ok: integrity.ok, differences: integrity.differences, missing: integrity.missing } : null,
-      };
+    job.status = 'running';
+    job.lastRun = new Date().toISOString();
+    job.lastError = '';
+    writeJobs(jobs);
+
+    let logFile;
+    try {
+      const result = await runJob(job);
+      logFile = result.logFile;
+      job.status = 'success';
+    } catch (err) {
+      job.status = 'failed';
+      job.lastError = err.message;
+      const blob = getJobStats(jobId);
+      if (blob && blob.logFile) logFile = blob.logFile;
     }
-  } catch (e) {
-    // Report failure shouldn't take down the job
-    job.lastError = (job.lastError ? job.lastError + ' · ' : '') + 'Report generation failed: ' + e.message;
-  }
 
-  job.lastRun = new Date().toISOString();
-  writeJobs(jobs);
+    try {
+      const blob = getJobStats(jobId);
+      if (blob && logFile) {
+        const summary = await summarizeLog(logFile);
+        let integrity = null;
+        if (job.status === 'success') {
+          try { integrity = await runIntegrityCheck(job); }
+          catch (e) { integrity = { ok: false, error: e.message, matching: 0, differences: 0, missing: 0, errors: 0, exitCode: -1 }; }
+        }
+        const reportFile = await generateReport(job, logFile, summary, integrity, blob);
+        job.lastReport = path.basename(reportFile);
+        job.lastSummary = {
+          copied:  summary.copiedTotal,
+          deleted: summary.deletedTotal,
+          updated: summary.updatedTotal,
+          errors:  summary.errorsTotal,
+          integrity: integrity
+            ? { ok: integrity.ok, differences: integrity.differences, missing: integrity.missing }
+            : null,
+        };
+        pruneOldFiles(jobId);
+      }
+    } catch (e) {
+      job.lastError = (job.lastError ? job.lastError + ' · ' : '') + 'Report generation failed: ' + e.message;
+    }
+
+    // Re-read and merge to avoid overwriting edits that arrived during the run.
+    const fresh = readJobs();
+    const idx = fresh.findIndex(j => j.id === jobId);
+    if (idx !== -1) {
+      fresh[idx] = {
+        ...fresh[idx],
+        status:      job.status,
+        lastRun:     new Date().toISOString(),
+        lastError:   job.lastError || '',
+        lastReport:  job.lastReport,
+        lastSummary: job.lastSummary,
+      };
+      writeJobs(fresh);
+    }
+  } finally {
+    cleanupJobState(jobId);
+    executing.delete(jobId);
+  }
 }
 
 async function simulateJob(jobId) {
+  if (executing.has(jobId)) return;
+
   const jobs = readJobs();
   const job = jobs.find(j => j.id === jobId);
-  if (!job) return;
-  if (job.status === 'running' || job.simulating) return;
+  if (!job || job.status === 'running' || job.simulating) return;
 
+  executing.add(jobId);
   job.simulating = true;
   writeJobs(jobs);
 
-  let logFile;
-  try {
-    const result = await runJob(job, { dryRun: true });
-    logFile = result.logFile;
-  } catch (err) {
-    const blob = getJobStats(jobId);
-    if (blob && blob.logFile) logFile = blob.logFile;
-    job.lastSimulationError = err.message;
-  }
+  let lastSimulation;
+  let lastSimulationError;
 
   try {
-    const blob = getJobStats(jobId);
-    if (blob && logFile) {
-      const summary = summarizeLog(logFile);
-      const reportFile = generateReport(job, logFile, summary, null, blob);
-      job.lastSimulation = {
-        report: path.basename(reportFile),
-        ranAt: new Date().toISOString(),
-        wouldCopy:   summary.copied.length,
-        wouldDelete: summary.deleted.length,
-        wouldUpdate: summary.updated.length,
-        errors:      summary.errors.length,
-      };
+    let logFile;
+    try {
+      const result = await runJob(job, { dryRun: true });
+      logFile = result.logFile;
+    } catch (err) {
+      const blob = getJobStats(jobId);
+      if (blob && blob.logFile) logFile = blob.logFile;
+      lastSimulationError = err.message;
     }
-  } catch (e) {
-    job.lastSimulationError = (job.lastSimulationError ? job.lastSimulationError + ' · ' : '')
-      + 'Sim report failed: ' + e.message;
-  }
 
-  job.simulating = false;
-  // Persist by re-reading + merging in case the user edited the job mid-sim
-  const fresh = readJobs();
-  const idx = fresh.findIndex(j => j.id === jobId);
-  if (idx !== -1) {
-    fresh[idx] = {
-      ...fresh[idx],
-      simulating: false,
-      lastSimulation: job.lastSimulation,
-      lastSimulationError: job.lastSimulationError,
-    };
-    writeJobs(fresh);
+    try {
+      const blob = getJobStats(jobId);
+      if (blob && logFile) {
+        const summary = await summarizeLog(logFile);
+        const reportFile = await generateReport(job, logFile, summary, null, blob);
+        lastSimulation = {
+          report:      path.basename(reportFile),
+          ranAt:       new Date().toISOString(),
+          wouldCopy:   summary.copiedTotal,
+          wouldDelete: summary.deletedTotal,
+          wouldUpdate: summary.updatedTotal,
+          errors:      summary.errorsTotal,
+        };
+        pruneOldFiles(jobId);
+      }
+    } catch (e) {
+      lastSimulationError = (lastSimulationError ? lastSimulationError + ' · ' : '')
+        + 'Sim report failed: ' + e.message;
+    }
+
+    // Re-read and merge so a concurrent job edit is not lost.
+    const fresh = readJobs();
+    const idx = fresh.findIndex(j => j.id === jobId);
+    if (idx !== -1) {
+      fresh[idx] = {
+        ...fresh[idx],
+        simulating: false,
+        lastSimulation,
+        lastSimulationError,
+      };
+      writeJobs(fresh);
+    }
+  } finally {
+    cleanupJobState(jobId);
+    executing.delete(jobId);
   }
 }
 

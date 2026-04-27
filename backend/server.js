@@ -1,10 +1,14 @@
 const express = require('express');
 const path = require('path');
+const helmet = require('helmet');
+const auth = require('./middleware/auth');
 const { initScheduler } = require('./services/scheduler');
 
 const app = express();
-app.use(express.json());
+app.use(helmet({ contentSecurityPolicy: false }));
+app.use(express.json({ limit: '1mb' }));
 
+app.use('/api', auth);
 app.use('/api/remotes', require('./routes/remotes'));
 app.use('/api/jobs', require('./routes/jobs'));
 app.use('/api/logs', require('./routes/logs'));

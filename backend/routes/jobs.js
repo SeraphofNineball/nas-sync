@@ -4,6 +4,13 @@ const { readJobs, writeJobs } = require('../services/store');
 const { scheduleJob, unscheduleJob, executeJob, simulateJob } = require('../services/scheduler');
 const { getProgress, stopJob, stopAllJobs } = require('../services/rclone');
 
+// Extracts only the user-supplied fields so callers cannot override internal
+// state (id, status, createdAt, lastRun, lastError, simulating, etc.).
+function pickJobFields(body) {
+  const { name, type, sourceRemote, sourcePath, destRemote, destPath, schedule, enabled } = body;
+  return { name, type, sourceRemote, sourcePath, destRemote, destPath, schedule, enabled };
+}
+
 router.get('/', (req, res) => {
   const jobs = readJobs();
   res.json(jobs.map(j => ({
@@ -13,8 +20,17 @@ router.get('/', (req, res) => {
 });
 
 router.post('/', (req, res) => {
+  const fields = pickJobFields(req.body);
+  if (!fields.name?.trim()) return res.status(400).json({ error: 'name is required' });
   const jobs = readJobs();
-  const job = { id: uuidv4(), enabled: true, status: 'idle', createdAt: new Date().toISOString(), ...req.body };
+  const job = {
+    id:        uuidv4(),
+    status:    'idle',
+    enabled:   fields.enabled !== false,
+    createdAt: new Date().toISOString(),
+    ...fields,
+    name: fields.name.trim(),
+  };
   jobs.push(job);
   writeJobs(jobs);
   scheduleJob(job);
@@ -25,7 +41,7 @@ router.put('/:id', (req, res) => {
   const jobs = readJobs();
   const idx = jobs.findIndex(j => j.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'Not found' });
-  jobs[idx] = { ...jobs[idx], ...req.body };
+  jobs[idx] = { ...jobs[idx], ...pickJobFields(req.body) };
   writeJobs(jobs);
   unscheduleJob(jobs[idx].id);
   scheduleJob(jobs[idx]);

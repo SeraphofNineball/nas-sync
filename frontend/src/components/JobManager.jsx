@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { remotes as remotesApi, jobs as jobsApi, logs as logsApi, reports as reportsApi } from '../api.js';
 import FileBrowser from './FileBrowser.jsx';
 
@@ -85,6 +85,19 @@ export default function JobManager() {
   const loadJobs    = useCallback(() => jobsApi.list().then(setJobList), []);
   const loadRemotes = useCallback(() => remotesApi.list().then(setRemoteList), []);
 
+  // Track pending refresh timers so they can be cancelled if the component
+  // unmounts before they fire, preventing state updates on unmounted components.
+  const pendingTimers = useRef([]);
+  useEffect(() => () => { pendingTimers.current.forEach(clearTimeout); }, []);
+
+  const scheduleRefresh = useCallback((ms = 500) => {
+    const id = setTimeout(() => {
+      pendingTimers.current = pendingTimers.current.filter(t => t !== id);
+      loadJobs();
+    }, ms);
+    pendingTimers.current.push(id);
+  }, [loadJobs]);
+
   useEffect(() => { loadJobs(); loadRemotes(); }, []);
 
   // Poll every 3s while any job is running or simulating
@@ -138,22 +151,22 @@ export default function JobManager() {
 
   const runJob = async (id) => {
     await jobsApi.run(id);
-    setTimeout(loadJobs, 500);
+    scheduleRefresh(500);
   };
 
   const simulateJob = async (id) => {
     await jobsApi.simulate(id);
-    setTimeout(loadJobs, 500);
+    scheduleRefresh(500);
   };
 
   const stopJob = async (id) => {
     await jobsApi.stop(id);
-    setTimeout(loadJobs, 800);
+    scheduleRefresh(800);
   };
 
   const stopAll = async () => {
     await jobsApi.stopAll();
-    setTimeout(loadJobs, 800);
+    scheduleRefresh(800);
   };
 
   const removeJob = async (id) => {

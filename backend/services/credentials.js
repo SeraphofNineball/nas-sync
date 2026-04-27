@@ -30,6 +30,14 @@ function obscurePassword(plaintext) {
 }
 
 function getOrCreateKey() {
+  // Prefer an externally-injected key (e.g. Docker secret / env var) so the
+  // key is never co-located with the encrypted data on the same volume.
+  // Set CREDENTIALS_KEY to a 64-character hex string (32 bytes).
+  if (process.env.CREDENTIALS_KEY) {
+    const key = Buffer.from(process.env.CREDENTIALS_KEY, 'hex');
+    if (key.length !== 32) throw new Error('CREDENTIALS_KEY must be 64 hex characters (32 bytes)');
+    return key;
+  }
   fs.mkdirSync(DATA_DIR, { recursive: true });
   if (fs.existsSync(KEY_FILE)) return fs.readFileSync(KEY_FILE);
   const key = crypto.randomBytes(32);
