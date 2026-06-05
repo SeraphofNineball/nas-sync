@@ -37,7 +37,7 @@ function captureRemoteHashes(jobId, remote, remotePath) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     const errChunks = [];
-    const proc = spawn('rclone', ['hashsum', 'SHA-256', target], { env: env() });
+    const proc = spawn('rclone', ['hashsum', 'SHA-256', target, '--download'], { env: env() });
     hashRunningProcesses[jobId] = proc;
 
     proc.stdout.on('data', d => chunks.push(d));
