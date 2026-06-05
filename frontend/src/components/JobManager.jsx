@@ -53,6 +53,8 @@ const EMPTY_FORM = {
   enabled: true,
 };
 
+function isHashJob(type) { return type === 'hash-capture'; }
+
 function fmtElapsed(startTime) {
   if (!startTime) return '';
   const s = Math.floor((Date.now() - startTime) / 1000);
@@ -124,8 +126,8 @@ export default function JobManager() {
     setEditing(job.id);
     setForm({
       name: job.name, type: job.type,
-      sourceRemote: job.sourceRemote, sourcePath: job.sourcePath || '',
-      destRemote: job.destRemote,     destPath: job.destPath || '',
+      sourceRemote: job.sourceRemote || '', sourcePath: job.sourcePath || '',
+      destRemote: job.destRemote || '',     destPath: job.destPath || '',
       ...parseCron(job.schedule),
       enabled: job.enabled,
     });
@@ -134,7 +136,8 @@ export default function JobManager() {
 
   const submit = async () => {
     if (!form.name.trim()) return setError('Job name is required');
-    if (!form.sourceRemote || !form.destRemote) return setError('Source and destination remotes are required');
+    if (!form.sourceRemote) return setError('Source remote is required');
+    if (!isHashJob(form.type) && !form.destRemote) return setError('Destination remote is required');
     setSaving(true); setError('');
     const schedule = buildCron(form);
     const payload = {
@@ -240,7 +243,10 @@ export default function JobManager() {
                       {!job.enabled && <span style={{ fontSize: 11, color: 'var(--muted)' }}>disabled</span>}
                     </div>
                     <div style={{ fontSize: 12, color: 'var(--muted)' }}>
-                      {job.sourceRemote}:{job.sourcePath || ''} → {job.destRemote}:{job.destPath || ''}
+                      {isHashJob(job.type)
+                        ? `${job.sourceRemote}:${job.sourcePath || ''}`
+                        : `${job.sourceRemote}:${job.sourcePath || ''} → ${job.destRemote}:${job.destPath || ''}`
+                      }
                     </div>
                     <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
                       Schedule: {scheduleLabel(job)}
@@ -284,7 +290,28 @@ export default function JobManager() {
                     )}
 
                     {/* Last summary (post-run) */}
-                    {!isBusy && job.lastSummary && (
+                    {!isBusy && job.lastSummary && job.lastSummary.jobKind === 'hash-capture' && (
+                      <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--muted)', marginTop: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                        {job.lastSummary.isFirstRun ? (
+                          <span style={{ color: 'var(--info, #1565C0)', fontWeight: 600 }}>Baseline established</span>
+                        ) : job.lastSummary.hasChanges ? (
+                          <span style={{ color: 'var(--danger)', fontWeight: 700 }}>CHANGES DETECTED</span>
+                        ) : (
+                          <span style={{ color: 'var(--success)', fontWeight: 600 }}>Clean — no changes</span>
+                        )}
+                        <span>{job.lastSummary.totalFiles.toLocaleString()} files</span>
+                        {!job.lastSummary.isFirstRun && job.lastSummary.modified > 0 && (
+                          <span style={{ color: 'var(--danger)' }}>{job.lastSummary.modified} modified</span>
+                        )}
+                        {!job.lastSummary.isFirstRun && job.lastSummary.added > 0 && (
+                          <span style={{ color: 'var(--warning)' }}>{job.lastSummary.added} added</span>
+                        )}
+                        {!job.lastSummary.isFirstRun && job.lastSummary.deleted > 0 && (
+                          <span style={{ color: 'var(--warning)' }}>{job.lastSummary.deleted} deleted</span>
+                        )}
+                      </div>
+                    )}
+                    {!isBusy && job.lastSummary && job.lastSummary.jobKind !== 'hash-capture' && (
                       <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--muted)', marginTop: 6, flexWrap: 'wrap' }}>
                         <span>Copied {job.lastSummary.copied.toLocaleString()}</span>
                         <span>Deleted {job.lastSummary.deleted.toLocaleString()}</span>
@@ -317,7 +344,9 @@ export default function JobManager() {
                     ) : (
                       <>
                         <button className="btn-ghost btn-sm" onClick={() => runJob(job.id)}>Run</button>
-                        <button className="btn-ghost btn-sm" onClick={() => simulateJob(job.id)} title="Dry run — show what would change without modifying anything">Simulate</button>
+                        {!isHashJob(job.type) && (
+                          <button className="btn-ghost btn-sm" onClick={() => simulateJob(job.id)} title="Dry run — show what would change without modifying anything">Simulate</button>
+                        )}
                       </>
                     )}
                     <button className="btn-ghost btn-sm" onClick={() => openReports(job)}>Report</button>
@@ -368,19 +397,26 @@ export default function JobManager() {
                 <option value="mirror">Mirror — exact copy, deletions included</option>
                 <option value="sync">Sync — copy new/changed, no deletions</option>
                 <option value="backup">Backup — versioned, keeps deleted files</option>
+                <option value="hash-capture">Hash Monitor — detect file tampering via SHA-256</option>
               </select>
             </div>
 
+            {isHashJob(form.type) && (
+              <div style={{ padding: '8px 12px', borderRadius: 6, background: 'var(--surface2)', fontSize: 12, color: 'var(--muted)', marginBottom: 4 }}>
+                Scans the source directory with rclone hashsum SHA-256 and stores a snapshot. Each run compares against the previous snapshot and flags modified, added, or deleted files.
+              </div>
+            )}
+
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <div className="field">
-                <label>Source Remote</label>
+                <label>{isHashJob(form.type) ? 'Remote' : 'Source Remote'}</label>
                 <select value={form.sourceRemote} onChange={e => set('sourceRemote', e.target.value)}>
                   <option value="">Select remote…</option>
                   {remoteList.map(r => <option key={r} value={r}>{r}</option>)}
                 </select>
               </div>
               <div className="field">
-                <label>Source Path</label>
+                <label>{isHashJob(form.type) ? 'Directory to Monitor' : 'Source Path'}</label>
                 <div style={{ display: 'flex', gap: 6 }}>
                   <input value={form.sourcePath} onChange={e => set('sourcePath', e.target.value)} placeholder="e.g. Media/Movies" />
                   <button type="button" className="btn-ghost btn-sm" style={{ whiteSpace: 'nowrap', flexShrink: 0 }}
@@ -390,24 +426,28 @@ export default function JobManager() {
                   </button>
                 </div>
               </div>
-              <div className="field">
-                <label>Destination Remote</label>
-                <select value={form.destRemote} onChange={e => set('destRemote', e.target.value)}>
-                  <option value="">Select remote…</option>
-                  {remoteList.map(r => <option key={r} value={r}>{r}</option>)}
-                </select>
-              </div>
-              <div className="field">
-                <label>Destination Path</label>
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <input value={form.destPath} onChange={e => set('destPath', e.target.value)} placeholder="e.g. Backups/Media" />
-                  <button type="button" className="btn-ghost btn-sm" style={{ whiteSpace: 'nowrap', flexShrink: 0 }}
-                    disabled={!form.destRemote}
-                    onClick={() => setBrowser({ field: 'destPath', remote: form.destRemote })}>
-                    Browse
-                  </button>
-                </div>
-              </div>
+              {!isHashJob(form.type) && (
+                <>
+                  <div className="field">
+                    <label>Destination Remote</label>
+                    <select value={form.destRemote} onChange={e => set('destRemote', e.target.value)}>
+                      <option value="">Select remote…</option>
+                      {remoteList.map(r => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label>Destination Path</label>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <input value={form.destPath} onChange={e => set('destPath', e.target.value)} placeholder="e.g. Backups/Media" />
+                      <button type="button" className="btn-ghost btn-sm" style={{ whiteSpace: 'nowrap', flexShrink: 0 }}
+                        disabled={!form.destRemote}
+                        onClick={() => setBrowser({ field: 'destPath', remote: form.destRemote })}>
+                        Browse
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
 
             <div className="field">
@@ -495,9 +535,11 @@ export default function JobManager() {
                   <label>Run</label>
                   <select value={reportFile} onChange={e => setReportFile(e.target.value)}>
                     {reportFiles.map(f => {
-                      const isSim = f.startsWith('sim-');
-                      const ts = f.replace(/^sim-/, '').replace(`${reportJob.id}-`, '').replace('.html', '');
-                      return <option key={f} value={f}>{isSim ? `[Simulation] ${ts}` : ts}</option>;
+                      const isSim  = f.startsWith('sim-');
+                      const isHash = f.startsWith('hash-');
+                      const ts = f.replace(/^(sim-|hash-)/, '').replace(`${reportJob.id}-`, '').replace('.html', '');
+                      const prefix = isSim ? '[Simulation] ' : isHash ? '[Hash] ' : '';
+                      return <option key={f} value={f}>{prefix}{ts}</option>;
                     })}
                   </select>
                 </div>

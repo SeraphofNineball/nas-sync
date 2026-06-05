@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const path = require('path');
 const { readJobs, writeJobs } = require('./store');
 const { runJob, summarizeLog, runIntegrityCheck, generateReport, getJobStats, cleanupJobState, pruneOldFiles } = require('./rclone');
+const { runHashCapture, pruneOldHashFiles } = require('./hasher');
 
 const active = {};
 
@@ -23,6 +24,11 @@ async function executeJob(jobId) {
     job.lastRun = new Date().toISOString();
     job.lastError = '';
     writeJobs(jobs);
+
+    if (job.type === 'hash-capture') {
+      await executeHashJob(job, jobId);
+      return;
+    }
 
     let logFile;
     try {
@@ -80,6 +86,53 @@ async function executeJob(jobId) {
     cleanupJobState(jobId);
     executing.delete(jobId);
   }
+}
+
+async function executeHashJob(job, jobId) {
+  try {
+    const result = await runHashCapture(job);
+    const { diff, isFirstRun, snapshot } = result;
+
+    const lastSummary = {
+      jobKind:    'hash-capture',
+      totalFiles: snapshot.totalFiles,
+      isFirstRun,
+      modified:   diff ? diff.modified.length : 0,
+      added:      diff ? diff.added.length    : 0,
+      deleted:    diff ? diff.deleted.length  : 0,
+      unchanged:  diff ? diff.unchanged.length : snapshot.totalFiles,
+      hasChanges: diff ? (diff.modified.length + diff.added.length + diff.deleted.length) > 0 : false,
+    };
+
+    pruneOldHashFiles(jobId);
+
+    const fresh = readJobs();
+    const idx = fresh.findIndex(j => j.id === jobId);
+    if (idx !== -1) {
+      fresh[idx] = {
+        ...fresh[idx],
+        status:      'success',
+        lastRun:     new Date().toISOString(),
+        lastError:   '',
+        lastReport:  path.basename(result.reportFile),
+        lastSummary,
+      };
+      writeJobs(fresh);
+    }
+  } catch (err) {
+    const fresh = readJobs();
+    const idx = fresh.findIndex(j => j.id === jobId);
+    if (idx !== -1) {
+      fresh[idx] = {
+        ...fresh[idx],
+        status:    'failed',
+        lastRun:   new Date().toISOString(),
+        lastError: err.message,
+      };
+      writeJobs(fresh);
+    }
+  }
+  // executing.delete handled by executeJob's finally block
 }
 
 async function simulateJob(jobId) {

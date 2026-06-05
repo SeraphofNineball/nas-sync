@@ -465,7 +465,11 @@ ${integSection}
 function listReports(jobId) {
   if (!fs.existsSync(REPORTS_DIR)) return [];
   return fs.readdirSync(REPORTS_DIR)
-    .filter(f => (f.startsWith(`${jobId}-`) || f.startsWith(`sim-${jobId}-`)) && f.endsWith('.html'))
+    .filter(f => (
+      f.startsWith(`${jobId}-`) ||
+      f.startsWith(`sim-${jobId}-`) ||
+      f.startsWith(`hash-${jobId}-`)
+    ) && f.endsWith('.html'))
     .sort().reverse();
 }
 

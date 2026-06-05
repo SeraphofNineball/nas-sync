@@ -3,6 +3,7 @@ const { v4: uuidv4 } = require('uuid');
 const { readJobs, writeJobs } = require('../services/store');
 const { scheduleJob, unscheduleJob, executeJob, simulateJob } = require('../services/scheduler');
 const { getProgress, stopJob, stopAllJobs } = require('../services/rclone');
+const { cancelHashCapture } = require('../services/hasher');
 
 // Extracts only the user-supplied fields so callers cannot override internal
 // state (id, status, createdAt, lastRun, lastError, simulating, etc.).
@@ -70,7 +71,7 @@ router.post('/:id/simulate', (req, res) => {
 });
 
 router.post('/:id/stop', (req, res) => {
-  const stopped = stopJob(req.params.id);
+  const stopped = stopJob(req.params.id) || cancelHashCapture(req.params.id);
   res.json({ success: stopped });
 });
 
