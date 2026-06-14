@@ -124,9 +124,6 @@ function parseStats(text) {
   return Object.keys(out).length ? out : null;
 }
 
-// Streams the log file line-by-line to avoid loading it entirely into memory.
-// Arrays are capped at 1000 entries for report rendering; *Total fields hold
-// the actual counts.
 async function summarizeLog(logFile) {
   const result = {
     copied: [], copiedTotal: 0,
@@ -144,13 +141,13 @@ async function summarizeLog(logFile) {
     rl.on('line', raw => {
       const line = raw.replace(/\x1b\[[0-9;]*[mGKHF]/g, '');
       let m = line.match(/(?:INFO|NOTICE)\s*:\s+(.+?):\s+(?:Copied\b|Skipped copy as --dry-run)/);
-      if (m) { result.copiedTotal++; if (result.copied.length < 1000) result.copied.push(m[1]); return; }
+      if (m) { result.copiedTotal++; result.copied.push(m[1]); return; }
       m = line.match(/(?:INFO|NOTICE)\s*:\s+(.+?):\s+(?:Deleted\b|Skipped delete as --dry-run)/);
-      if (m) { result.deletedTotal++; if (result.deleted.length < 1000) result.deleted.push(m[1]); return; }
+      if (m) { result.deletedTotal++; result.deleted.push(m[1]); return; }
       m = line.match(/(?:INFO|NOTICE)\s*:\s+(.+?):\s+(?:Updated\b|Skipped update as --dry-run)/);
-      if (m) { result.updatedTotal++; if (result.updated.length < 1000) result.updated.push(m[1]); return; }
+      if (m) { result.updatedTotal++; result.updated.push(m[1]); return; }
       m = line.match(/ERROR\s*:\s+(.+?):\s+(.+)/);
-      if (m) { result.errorsTotal++; if (result.errors.length < 1000) result.errors.push({ file: m[1], message: m[2] }); }
+      if (m) { result.errorsTotal++; result.errors.push({ file: m[1], message: m[2] }); }
     });
     rl.on('close', resolve);
     rl.on('error', reject);
@@ -336,49 +333,67 @@ async function generateReport(job, logFile, summary, integrity, statsBlob) {
   const errCount     = summary.errorsTotal;
 
   const integSection = integrity ? `
-  <table width="100%" border="1" cellpadding="5" cellspacing="0" bordercolor="#E3F2FD">
-  <tr bgcolor="#1565C0"><td colspan="4"><strong><font color="#FFFFFF" size="3" face="Segoe UI Variable, Segoe UI, Verdana, sans-serif">Log Report: Integrity Check</font></strong></td></tr>
-  <tr><td width="22%" bgcolor="#BBDEFB"><strong><font color="#000077">Result</font></strong></td>
-      <td bgcolor="#FFFFFF"><font color="${integrity.ok ? '#16a34a' : '#dc2626'}"><strong>${integrity.ok ? 'PASS — destination matches source' : 'FAIL — differences detected'}</strong></font></td></tr>
-  <tr><td bgcolor="#BBDEFB"><strong>Matching files</strong></td><td bgcolor="#FFFFFF">${integrity.matching.toLocaleString()}</td></tr>
-  <tr><td bgcolor="#BBDEFB"><strong>Differences</strong></td><td bgcolor="#FFFFFF">${integrity.differences.toLocaleString()}</td></tr>
-  <tr><td bgcolor="#BBDEFB"><strong>Missing</strong></td><td bgcolor="#FFFFFF">${integrity.missing.toLocaleString()}</td></tr>
-  <tr><td bgcolor="#BBDEFB"><strong>Errors during check</strong></td><td bgcolor="#FFFFFF">${integrity.errors.toLocaleString()}</td></tr>
-  <tr><td bgcolor="#BBDEFB"><strong>Mode</strong></td><td bgcolor="#FFFFFF">--size-only${job.type === 'sync' ? ' --one-way' : ''}</td></tr>
+  <table class="rpt-t" cellpadding="5">
+  <tr class="rpt-hdr"><td colspan="4">Log Report: Integrity Check</td></tr>
+  <tr><td class="rpt-lbl"><strong>Result</strong></td>
+      <td class="rpt-val"><strong style="color:${integrity.ok ? '#16a34a' : '#dc2626'}">${integrity.ok ? 'PASS — destination matches source' : 'FAIL — differences detected'}</strong></td></tr>
+  <tr><td class="rpt-lbl"><strong>Matching files</strong></td><td class="rpt-val">${integrity.matching.toLocaleString()}</td></tr>
+  <tr><td class="rpt-lbl"><strong>Differences</strong></td><td class="rpt-val">${integrity.differences.toLocaleString()}</td></tr>
+  <tr><td class="rpt-lbl"><strong>Missing</strong></td><td class="rpt-val">${integrity.missing.toLocaleString()}</td></tr>
+  <tr><td class="rpt-lbl"><strong>Errors during check</strong></td><td class="rpt-val">${integrity.errors.toLocaleString()}</td></tr>
+  <tr><td class="rpt-lbl"><strong>Mode</strong></td><td class="rpt-val">--size-only${job.type === 'sync' ? ' --one-way' : ''}</td></tr>
   </table><br>` : '';
 
-  // items is already capped at 1000; total is the real count.
-  const fileList = (title, color, items, total) => {
+  const fileList = (title, items, total) => {
     if (!total) return '';
-    const rows = items.map(f => `<tr><td bgcolor="#FFFFFF" style="font-family:monospace;font-size:12px">${esc(f)}</td></tr>`).join('');
-    const more = total > items.length ? `<tr><td bgcolor="#FFFFE0">… ${(total - items.length).toLocaleString()} more (see log file)</td></tr>` : '';
+    const rows = items.map(f => `<tr><td class="rpt-file">${esc(f)}</td></tr>`).join('');
     return `<button class="collapsible">${title} (${total.toLocaleString()})</button><div class="content">
-      <table width="100%" border="1" cellpadding="3" cellspacing="0" bordercolor="${color}">${rows}${more}</table></div><br>`;
+      <table class="rpt-t" cellpadding="3">${rows}</table></div><br>`;
   };
 
   const html = `<!DOCTYPE HTML>
 <html><head>
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 <title>NAS Sync Report — ${esc(job.name)}</title>
+<script>(function(){var t=localStorage.getItem('nas-sync-theme')||'dark';document.documentElement.setAttribute('data-theme',t);})();</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
 <style>
-  body { background-color: #F8F8F8; font-family: "Segoe UI Variable","Segoe UI",Verdana,sans-serif; margin: 16px; }
-  #rcorners { -moz-border-radius: 10px; border-radius: 10px; border: 2px solid #DDDDDD; background-color: #EEEEEE; padding: 5px; width: 100%; }
-  .topnav { overflow: hidden; background-color: #1565C0; border-radius: 10px; }
-  .topnav a, .topnav div { float: left; color: #FFFFFF; padding: 10px; font-size: 15px; font-weight: bold; text-decoration: none; }
-  .topnav div { color: #BBDEFB; }
-  .topnav a:hover { background-color: #BBDEFB; color: black; }
-  .collapsible { background-color: #1565C0; color: #FFFFFF; cursor: pointer; padding: 10px; width: 100%; border: none; text-align: left; font-size: 16px; font-weight: bold; }
-  .active, .collapsible:hover { background-color: #42A5F5; }
-  .collapsible:after { content: "\\002B"; color: #FFFFFF; float: right; }
-  .active:after { content: "\\2212"; }
-  .content { padding: 0; max-height: 0; overflow: hidden; transition: max-height 0.2s ease-out; background-color: #f1f1f1; }
-  meter { width: 100%; height: 20px; }
+:root{--rpt-bg:#0d0d1a;--rpt-text:#e0e0f0;--rpt-rc-bg:#161625;--rpt-rc-bd:#2a2a45;--rpt-hdr-bg:#1a3a6e;--rpt-hdr-tx:#c8deff;--rpt-lbl-bg:#1e1e32;--rpt-lbl-tx:#7aaaff;--rpt-val-bg:#161625;--rpt-border:#2a2a45;--rpt-nav-bg:#1a3a6e;--rpt-nav-tx:#fff;--rpt-nav-sub:#7aaaff;--rpt-btn-hov:#2a5ab0;--rpt-cnt-bg:#0d0d1a;--rpt-file-bg:#1e1e32;--rpt-err-bg:#2e0d0d;--rpt-warn-bg:#3a2800;--rpt-warn-bd:#f0a030;--rpt-warn-tx:#f0d080}
+[data-theme="light"]{--rpt-bg:#f0f2f5;--rpt-text:#111827;--rpt-rc-bg:#eeeeee;--rpt-rc-bd:#dddddd;--rpt-hdr-bg:#1565C0;--rpt-hdr-tx:#fff;--rpt-lbl-bg:#BBDEFB;--rpt-lbl-tx:#000077;--rpt-val-bg:#fff;--rpt-border:#E3F2FD;--rpt-nav-bg:#1565C0;--rpt-nav-tx:#fff;--rpt-nav-sub:#BBDEFB;--rpt-btn-hov:#42A5F5;--rpt-cnt-bg:#f1f1f1;--rpt-file-bg:#fff;--rpt-err-bg:#FFEBEE;--rpt-warn-bg:#FFF3CD;--rpt-warn-bd:#F0AD4E;--rpt-warn-tx:#664500}
+[data-theme="high-contrast"]{--rpt-bg:#000;--rpt-text:#fff;--rpt-rc-bg:#0a0a0a;--rpt-rc-bd:#fff;--rpt-hdr-bg:#000;--rpt-hdr-tx:#ffff00;--rpt-lbl-bg:#111;--rpt-lbl-tx:#ffff00;--rpt-val-bg:#000;--rpt-border:#fff;--rpt-nav-bg:#111;--rpt-nav-tx:#ffff00;--rpt-nav-sub:#aaa;--rpt-btn-hov:#333;--rpt-cnt-bg:#000;--rpt-file-bg:#0a0a0a;--rpt-err-bg:#330000;--rpt-warn-bg:#332200;--rpt-warn-bd:#ffaa00;--rpt-warn-tx:#ffdd88}
+[data-theme="vscode"]{--rpt-bg:#1e1e1e;--rpt-text:#d4d4d4;--rpt-rc-bg:#252526;--rpt-rc-bd:#3c3c3c;--rpt-hdr-bg:#0e2d4a;--rpt-hdr-tx:#d4d4d4;--rpt-lbl-bg:#2d2d30;--rpt-lbl-tx:#0098f0;--rpt-val-bg:#252526;--rpt-border:#3c3c3c;--rpt-nav-bg:#007acc;--rpt-nav-tx:#fff;--rpt-nav-sub:#cce8ff;--rpt-btn-hov:#0098f0;--rpt-cnt-bg:#1e1e1e;--rpt-file-bg:#2d2d30;--rpt-err-bg:#2e0d0d;--rpt-warn-bg:#2a2200;--rpt-warn-bd:#dcdcaa;--rpt-warn-tx:#dcdcaa}
+[data-theme="monokai"]{--rpt-bg:#272822;--rpt-text:#f8f8f2;--rpt-rc-bg:#2d2e27;--rpt-rc-bd:#49483e;--rpt-hdr-bg:#1a3035;--rpt-hdr-tx:#66d9e8;--rpt-lbl-bg:#3e3d32;--rpt-lbl-tx:#a6e22e;--rpt-val-bg:#2d2e27;--rpt-border:#49483e;--rpt-nav-bg:#1a3035;--rpt-nav-tx:#f8f8f2;--rpt-nav-sub:#66d9e8;--rpt-btn-hov:#2a4a55;--rpt-cnt-bg:#272822;--rpt-file-bg:#3e3d32;--rpt-err-bg:#3a0d1e;--rpt-warn-bg:#2a2000;--rpt-warn-bd:#e6db74;--rpt-warn-tx:#e6db74}
+[data-theme="solarized"]{--rpt-bg:#002b36;--rpt-text:#839496;--rpt-rc-bg:#073642;--rpt-rc-bd:#586e75;--rpt-hdr-bg:#073642;--rpt-hdr-tx:#eee8d5;--rpt-lbl-bg:#0a4555;--rpt-lbl-tx:#268bd2;--rpt-val-bg:#073642;--rpt-border:#586e75;--rpt-nav-bg:#268bd2;--rpt-nav-tx:#fdf6e3;--rpt-nav-sub:#93a1a1;--rpt-btn-hov:#2aa8f2;--rpt-cnt-bg:#002b36;--rpt-file-bg:#0a4555;--rpt-err-bg:#2a0a0a;--rpt-warn-bg:#1a1500;--rpt-warn-bd:#b58900;--rpt-warn-tx:#b58900}
+*,*::before,*::after{box-sizing:border-box}
+body{font-family:'JetBrains Mono',monospace;background:var(--rpt-bg);color:var(--rpt-text);margin:16px;font-size:14px;line-height:1.5}
+#rcorners{border-radius:10px;border:2px solid var(--rpt-rc-bd);background:var(--rpt-rc-bg);padding:5px;width:100%;border-spacing:0}
+.topnav{overflow:hidden;background:var(--rpt-nav-bg);border-radius:10px}
+.topnav a,.topnav span{float:left;color:var(--rpt-nav-tx);padding:10px;font-size:15px;font-weight:bold;text-decoration:none}
+.topnav span{color:var(--rpt-nav-sub)}
+.topnav a:hover{background:var(--rpt-btn-hov)}
+.collapsible{background:var(--rpt-nav-bg);color:var(--rpt-nav-tx);cursor:pointer;padding:10px;width:100%;border:none;text-align:left;font-size:16px;font-weight:bold;font-family:'JetBrains Mono',monospace}
+.active,.collapsible:hover{background:var(--rpt-btn-hov)}
+.collapsible:after{content:"\\002B";color:var(--rpt-nav-tx);float:right}
+.active:after{content:"\\2212"}
+.content{padding:0;max-height:0;overflow:hidden;transition:max-height 0.2s ease-out;background:var(--rpt-cnt-bg)}
+.rpt-warn{margin-top:10px;padding:12px;border-radius:8px;background:var(--rpt-warn-bg);border:2px solid var(--rpt-warn-bd);color:var(--rpt-warn-tx);font-weight:bold;font-size:14px}
+meter{width:100%;height:20px}
+table.rpt-t{border-collapse:collapse;width:100%}
+table.rpt-t td,table.rpt-t th{border:1px solid var(--rpt-border);padding:5px}
+tr.rpt-hdr td{background:var(--rpt-hdr-bg);color:var(--rpt-hdr-tx);font-size:14px;font-weight:bold}
+td.rpt-lbl{background:var(--rpt-lbl-bg);color:var(--rpt-lbl-tx);width:22%;font-weight:bold}
+td.rpt-val{background:var(--rpt-val-bg);color:var(--rpt-text)}
+td.rpt-file{background:var(--rpt-file-bg);color:var(--rpt-text);font-family:'JetBrains Mono',monospace;font-size:12px}
+td.rpt-errmsg{background:var(--rpt-err-bg);color:var(--rpt-text)}
+.rpt-sub{color:var(--rpt-lbl-tx)}
 </style></head><body>
-<table id="rcorners" border="0" cellspacing="0" cellpadding="0"><tbody><tr>
-<td align="left" valign="middle" style="padding: 15px"><font color="#000000" size="5"><strong>NAS Sync ${isSim ? 'Simulation' : 'Report'}</strong><br><strong>${esc(job.name)}</strong></font></td>
-<td align="right" valign="middle" style="padding: 15px"><font color="#555555" size="4"><small>${esc(startISO)}<br>v1.0</small></font></td>
+<table id="rcorners" cellspacing="0" cellpadding="0"><tbody><tr>
+<td align="left" valign="middle" style="padding:15px"><strong style="font-size:20px">NAS Sync ${isSim ? 'Simulation' : 'Report'}</strong><br><strong style="font-size:18px">${esc(job.name)}</strong></td>
+<td align="right" valign="middle" style="padding:15px"><span class="rpt-sub">${esc(startISO)}<br>v1.0</span></td>
 </tr></tbody></table>
-${isSim ? `<div style="margin-top:10px;padding:12px;border-radius:8px;background:#FFF3CD;border:2px solid #F0AD4E;color:#664500;font-weight:bold;font-size:14px">&#9888; DRY-RUN SIMULATION &mdash; no files were actually modified. The lists below show what <em>would</em> happen if this job ran.</div>` : ''}
+${isSim ? `<div class="rpt-warn">&#9888; DRY-RUN SIMULATION &mdash; no files were actually modified. The lists below show what <em>would</em> happen if this job ran.</div>` : ''}
 <br>
 <div class="topnav">
   <a href="#copied">${verb}Copied (${copiedCount.toLocaleString()})</a>
@@ -388,63 +403,62 @@ ${isSim ? `<div style="margin-top:10px;padding:12px;border-radius:8px;background
 </div>
 <br>
 
-<table width="100%" border="1" cellpadding="5" cellspacing="0" bordercolor="#E3F2FD">
-<tr bgcolor="#1565C0"><td colspan="4"><strong><font color="#FFFFFF" size="3">Log Report: Overview</font></strong></td></tr>
-<tr><td width="22%" bgcolor="#BBDEFB"><strong><font color="#000077">Profile Name</font></strong></td><td width="28%" bgcolor="#FFFFFF">${esc(job.name)}</td>
-    <td width="22%" bgcolor="#BBDEFB"><strong><font color="#000077">Type</font></strong></td><td bgcolor="#FFFFFF">${esc(job.type)}</td></tr>
-<tr><td bgcolor="#BBDEFB"><strong><font color="#000077">Result</font></strong></td>
-    <td colspan="3" bgcolor="#FFFFFF"><font color="${resultColor}"><strong>${result}</strong></font>${statsBlob.error ? ' &mdash; ' + esc(statsBlob.error) : ''}</td></tr>
-<tr><td bgcolor="#BBDEFB"><strong><font color="#000077">Source</font></strong></td><td colspan="3" bgcolor="#FFFFFF">${esc(statsBlob.src)}</td></tr>
-<tr><td bgcolor="#BBDEFB"><strong><font color="#000077">Destination</font></strong></td><td colspan="3" bgcolor="#FFFFFF">${esc(statsBlob.dst)}</td></tr>
-<tr><td bgcolor="#BBDEFB"><strong><font color="#000077">Start Time</font></strong></td><td bgcolor="#FFFFFF">${esc(startISO)}</td>
-    <td bgcolor="#BBDEFB"><strong><font color="#000077">End Time</font></strong></td><td bgcolor="#FFFFFF">${esc(endISO)} (${dur})</td></tr>
-<tr><td bgcolor="#BBDEFB"><strong><font color="#000077">Trigger</font></strong></td><td colspan="3" bgcolor="#FFFFFF">Manual / Scheduled</td></tr>
+<table class="rpt-t" cellpadding="5">
+<tr class="rpt-hdr"><td colspan="4">Log Report: Overview</td></tr>
+<tr><td class="rpt-lbl">Profile Name</td><td class="rpt-val">${esc(job.name)}</td>
+    <td class="rpt-lbl">Type</td><td class="rpt-val">${esc(job.type)}</td></tr>
+<tr><td class="rpt-lbl">Result</td>
+    <td colspan="3" class="rpt-val"><strong style="color:${resultColor}">${result}</strong>${statsBlob.error ? ' &mdash; ' + esc(statsBlob.error) : ''}</td></tr>
+<tr><td class="rpt-lbl">Source</td><td colspan="3" class="rpt-val">${esc(statsBlob.src)}</td></tr>
+<tr><td class="rpt-lbl">Destination</td><td colspan="3" class="rpt-val">${esc(statsBlob.dst)}</td></tr>
+<tr><td class="rpt-lbl">Start Time</td><td class="rpt-val">${esc(startISO)}</td>
+    <td class="rpt-lbl">End Time</td><td class="rpt-val">${esc(endISO)} (${dur})</td></tr>
+<tr><td class="rpt-lbl">Trigger</td><td colspan="3" class="rpt-val">Manual / Scheduled</td></tr>
 </table>
 <br>
 
-<table width="100%" border="1" cellpadding="5" cellspacing="0" bordercolor="#E3F2FD">
-<tr bgcolor="#1565C0"><td colspan="4"><strong><font color="#FFFFFF" size="3">${isSim ? 'Simulation Totals' : 'Log Report: Run Totals'}</font></strong></td></tr>
-<tr><td width="22%" bgcolor="#BBDEFB"><strong><font color="#000077">${verb}Copied to Destination</font></strong></td>
-    <td bgcolor="#FFFFFF">${copiedCount.toLocaleString()} files</td></tr>
-<tr><td bgcolor="#BBDEFB"><strong><font color="#000077">Bytes ${isSim ? 'to Transfer' : 'Transferred'}</font></strong></td>
-    <td bgcolor="#FFFFFF">${esc(fp.transferred || '0')} / ${esc(fp.total || '0')}</td></tr>
-<tr><td bgcolor="#BBDEFB"><strong><font color="#000077">${verb}Deleted from Destination</font></strong></td>
-    <td bgcolor="#FFFFFF">${deletedCount.toLocaleString()} files</td></tr>
-<tr><td bgcolor="#BBDEFB"><strong><font color="#000077">${verb}Updated</font></strong></td>
-    <td bgcolor="#FFFFFF">${updatedCount.toLocaleString()} files</td></tr>
-<tr><td bgcolor="#BBDEFB"><strong><font color="#000077">Errors</font></strong></td>
-    <td bgcolor="#FFFFFF"><font color="${errCount > 0 ? '#dc2626' : '#16a34a'}">${errCount.toLocaleString()}</font></td></tr>
-<tr><td bgcolor="#BBDEFB"><strong><font color="#000077">Average Speed</font></strong></td>
-    <td bgcolor="#FFFFFF">${esc(fp.speed || '&mdash;')}</td></tr>
+<table class="rpt-t" cellpadding="5">
+<tr class="rpt-hdr"><td colspan="4">${isSim ? 'Simulation Totals' : 'Log Report: Run Totals'}</td></tr>
+<tr><td class="rpt-lbl">${verb}Copied to Destination</td>
+    <td class="rpt-val">${copiedCount.toLocaleString()} files</td></tr>
+<tr><td class="rpt-lbl">Bytes ${isSim ? 'to Transfer' : 'Transferred'}</td>
+    <td class="rpt-val">${esc(fp.transferred || '0')} / ${esc(fp.total || '0')}</td></tr>
+<tr><td class="rpt-lbl">${verb}Deleted from Destination</td>
+    <td class="rpt-val">${deletedCount.toLocaleString()} files</td></tr>
+<tr><td class="rpt-lbl">${verb}Updated</td>
+    <td class="rpt-val">${updatedCount.toLocaleString()} files</td></tr>
+<tr><td class="rpt-lbl">Errors</td>
+    <td class="rpt-val"><span style="color:${errCount > 0 ? '#dc2626' : '#16a34a'}">${errCount.toLocaleString()}</span></td></tr>
+<tr><td class="rpt-lbl">Average Speed</td>
+    <td class="rpt-val">${esc(fp.speed || '&mdash;')}</td></tr>
 </table>
 <br>
 
-<table width="100%" border="1" cellpadding="5" cellspacing="0" bordercolor="#E3F2FD">
-<tr bgcolor="#1565C0"><td colspan="4"><strong><font color="#FFFFFF" size="3">Log Report: Scan &amp; Compare Totals</font></strong></td></tr>
-<tr><td width="22%" bgcolor="#BBDEFB"><strong><font color="#000077">Files Scanned</font></strong></td>
-    <td width="10%" bgcolor="#FFFFFF">${totalScanned.toLocaleString()}</td>
-    <td width="68%" bgcolor="#FFFFFF"><meter value="${totalScanned}" min="0" max="${Math.max(totalScanned, 1)}">${totalScanned}</meter></td></tr>
-<tr><td bgcolor="#BBDEFB"><strong><font color="#000077">Files Copied</font></strong></td>
-    <td bgcolor="#FFFFFF">${copiedCount.toLocaleString()}</td>
-    <td bgcolor="#FFFFFF"><meter value="${copiedCount}" min="0" max="${Math.max(totalScanned, copiedCount, 1)}">${copiedCount}</meter></td></tr>
-<tr><td bgcolor="#BBDEFB"><strong><font color="#000077">Files Deleted</font></strong></td>
-    <td bgcolor="#FFFFFF">${deletedCount.toLocaleString()}</td>
-    <td bgcolor="#FFFFFF"><meter value="${deletedCount}" min="0" max="${Math.max(totalScanned, deletedCount, 1)}">${deletedCount}</meter></td></tr>
-<tr><td bgcolor="#BBDEFB"><strong><font color="#000077">Files Updated</font></strong></td>
-    <td bgcolor="#FFFFFF">${updatedCount.toLocaleString()}</td>
-    <td bgcolor="#FFFFFF"><meter value="${updatedCount}" min="0" max="${Math.max(totalScanned, updatedCount, 1)}">${updatedCount}</meter></td></tr>
+<table class="rpt-t" cellpadding="5">
+<tr class="rpt-hdr"><td colspan="4">Log Report: Scan &amp; Compare Totals</td></tr>
+<tr><td class="rpt-lbl">Files Scanned</td>
+    <td class="rpt-val" style="width:10%">${totalScanned.toLocaleString()}</td>
+    <td class="rpt-val" style="width:68%"><meter value="${totalScanned}" min="0" max="${Math.max(totalScanned, 1)}">${totalScanned}</meter></td></tr>
+<tr><td class="rpt-lbl">Files Copied</td>
+    <td class="rpt-val">${copiedCount.toLocaleString()}</td>
+    <td class="rpt-val"><meter value="${copiedCount}" min="0" max="${Math.max(totalScanned, copiedCount, 1)}">${copiedCount}</meter></td></tr>
+<tr><td class="rpt-lbl">Files Deleted</td>
+    <td class="rpt-val">${deletedCount.toLocaleString()}</td>
+    <td class="rpt-val"><meter value="${deletedCount}" min="0" max="${Math.max(totalScanned, deletedCount, 1)}">${deletedCount}</meter></td></tr>
+<tr><td class="rpt-lbl">Files Updated</td>
+    <td class="rpt-val">${updatedCount.toLocaleString()}</td>
+    <td class="rpt-val"><meter value="${updatedCount}" min="0" max="${Math.max(totalScanned, updatedCount, 1)}">${updatedCount}</meter></td></tr>
 </table>
 <br>
 
 ${integSection}
 
-<a id="copied"></a>${fileList(`${verb}Copied Files`, '#C8E6C9', summary.copied, summary.copiedTotal)}
-<a id="updated"></a>${fileList(`${verb}Updated Files`, '#FFE0B2', summary.updated, summary.updatedTotal)}
-<a id="deleted"></a>${fileList(`${verb}Deleted Files`, '#FFCDD2', summary.deleted, summary.deletedTotal)}
+<a id="copied"></a>${fileList(`${verb}Copied Files`, summary.copied, summary.copiedTotal)}
+<a id="updated"></a>${fileList(`${verb}Updated Files`, summary.updated, summary.updatedTotal)}
+<a id="deleted"></a>${fileList(`${verb}Deleted Files`, summary.deleted, summary.deletedTotal)}
 <a id="errors"></a>${errCount ? `<button class="collapsible">Errors (${errCount.toLocaleString()})</button><div class="content">
-  <table width="100%" border="1" cellpadding="3" cellspacing="0" bordercolor="#FFCDD2">
-    ${summary.errors.map(e => `<tr><td bgcolor="#FFFFFF" style="font-family:monospace;font-size:12px">${esc(e.file)}</td><td bgcolor="#FFEBEE">${esc(e.message)}</td></tr>`).join('')}
-    ${errCount > summary.errors.length ? `<tr><td colspan="2" bgcolor="#FFFFE0">&hellip; ${(errCount - summary.errors.length).toLocaleString()} more (see log file)</td></tr>` : ''}
+  <table class="rpt-t" cellpadding="3">
+    ${summary.errors.map(e => `<tr><td class="rpt-file">${esc(e.file)}</td><td class="rpt-errmsg">${esc(e.message)}</td></tr>`).join('')}
   </table></div><br>` : ''}
 
 <script>
