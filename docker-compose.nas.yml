@@ -8,3 +8,4 @@ services:
     volumes:
       - ./data:/data
       - /volume1:/volume1
+      - /mnt/@usb:/mnt/@usb
