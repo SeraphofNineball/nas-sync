@@ -8,8 +8,12 @@ const { cancelHashCapture } = require('../services/hasher');
 // Extracts only the user-supplied fields so callers cannot override internal
 // state (id, status, createdAt, lastRun, lastError, simulating, etc.).
 function pickJobFields(body) {
-  const { name, type, sourceRemote, sourcePath, destRemote, destPath, schedule, enabled } = body;
-  return { name, type, sourceRemote, sourcePath, destRemote, destPath, schedule, enabled };
+  const { name, type, sourceRemote, sourcePath, sourcePaths, destRemote, destPath, schedule, enabled } = body;
+  return {
+    name, type, sourceRemote, sourcePath,
+    sourcePaths: Array.isArray(sourcePaths) ? sourcePaths : [],
+    destRemote, destPath, schedule, enabled,
+  };
 }
 
 router.get('/', (req, res) => {

@@ -47,7 +47,7 @@ function describeSchedule(cron) {
 
 const EMPTY_FORM = {
   name: '', type: 'mirror',
-  sourceRemote: '', sourcePath: '', destRemote: '', destPath: '',
+  sourceRemote: '', sourcePath: '', sourcePaths: [], destRemote: '', destPath: '',
   scheduleMode: 'manual', scheduleTime: '02:00',
   scheduleDow: '0', scheduleDom: '1', customSchedule: '',
   enabled: true,
@@ -126,7 +126,9 @@ export default function JobManager() {
     setEditing(job.id);
     setForm({
       name: job.name, type: job.type,
-      sourceRemote: job.sourceRemote || '', sourcePath: job.sourcePath || '',
+      sourceRemote: job.sourceRemote || '',
+      sourcePath: (job.sourcePaths && job.sourcePaths.length > 0) ? '' : (job.sourcePath || ''),
+      sourcePaths: job.sourcePaths || [],
       destRemote: job.destRemote || '',     destPath: job.destPath || '',
       ...parseCron(job.schedule),
       enabled: job.enabled,
@@ -142,8 +144,10 @@ export default function JobManager() {
     const schedule = buildCron(form);
     const payload = {
       name: form.name.trim(), type: form.type,
-      sourceRemote: form.sourceRemote, sourcePath: form.sourcePath,
-      destRemote: form.destRemote,     destPath: form.destPath,
+      sourceRemote: form.sourceRemote,
+      sourcePath: form.sourcePaths.length > 0 ? '' : form.sourcePath,
+      sourcePaths: form.sourcePaths,
+      destRemote: form.destRemote, destPath: form.destPath,
       schedule, enabled: form.enabled,
     };
     const res = editing ? await jobsApi.update(editing, payload) : await jobsApi.create(payload);
@@ -243,10 +247,15 @@ export default function JobManager() {
                       {!job.enabled && <span style={{ fontSize: 11, color: 'var(--muted)' }}>disabled</span>}
                     </div>
                     <div style={{ fontSize: 12, color: 'var(--muted)' }}>
-                      {isHashJob(job.type)
-                        ? `${job.sourceRemote}:${job.sourcePath || ''}`
-                        : `${job.sourceRemote}:${job.sourcePath || ''} → ${job.destRemote}:${job.destPath || ''}`
-                      }
+                      {(() => {
+                        const srcDisplay = (job.sourcePaths && job.sourcePaths.length > 0)
+                          ? job.sourcePaths.slice(0, 2).map(p => `${job.sourceRemote}:${p}`).join(', ')
+                            + (job.sourcePaths.length > 2 ? ` +${job.sourcePaths.length - 2} more` : '')
+                          : `${job.sourceRemote}:${job.sourcePath || ''}`;
+                        return isHashJob(job.type)
+                          ? srcDisplay
+                          : `${srcDisplay} → ${job.destRemote}:${job.destPath || ''}`;
+                      })()}
                     </div>
                     <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
                       Schedule: {scheduleLabel(job)}
@@ -417,14 +426,58 @@ export default function JobManager() {
               </div>
               <div className="field">
                 <label>{isHashJob(form.type) ? 'Directory to Monitor' : 'Source Path'}</label>
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <input value={form.sourcePath} onChange={e => set('sourcePath', e.target.value)} placeholder="e.g. Media/Movies" />
-                  <button type="button" className="btn-ghost btn-sm" style={{ whiteSpace: 'nowrap', flexShrink: 0 }}
-                    disabled={!form.sourceRemote}
-                    onClick={() => setBrowser({ field: 'sourcePath', remote: form.sourceRemote })}>
-                    Browse
-                  </button>
-                </div>
+                {!isHashJob(form.type) && form.sourcePaths.length > 0 ? (
+                  <div>
+                    <div style={{
+                      display: 'flex', flexWrap: 'wrap', gap: 6,
+                      padding: '6px 8px', border: '1px solid var(--border)',
+                      borderRadius: 6, minHeight: 36, background: 'var(--surface)',
+                    }}>
+                      {form.sourcePaths.map(p => (
+                        <span key={p} style={{
+                          display: 'flex', alignItems: 'center', gap: 4,
+                          background: 'var(--surface2)', borderRadius: 4,
+                          padding: '2px 8px', fontSize: 12,
+                        }}>
+                          <span style={{ fontFamily: 'monospace' }}>{p}</span>
+                          <button
+                            type="button"
+                            onClick={() => set('sourcePaths', form.sourcePaths.filter(x => x !== p))}
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: 16, lineHeight: 1, padding: '0 2px' }}
+                          >×</button>
+                        </span>
+                      ))}
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+                      <button type="button" className="btn-ghost btn-sm"
+                        disabled={!form.sourceRemote}
+                        onClick={() => setBrowser({ field: 'sourcePaths', remote: form.sourceRemote, multiSelect: true })}>
+                        Browse
+                      </button>
+                      <button type="button" className="btn-ghost btn-sm"
+                        onClick={() => set('sourcePaths', [])}>
+                        Clear All
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <input
+                      value={form.sourcePath}
+                      onChange={e => set('sourcePath', e.target.value)}
+                      placeholder="e.g. Media/Movies"
+                    />
+                    <button type="button" className="btn-ghost btn-sm" style={{ whiteSpace: 'nowrap', flexShrink: 0 }}
+                      disabled={!form.sourceRemote}
+                      onClick={() => setBrowser({
+                        field: isHashJob(form.type) ? 'sourcePath' : 'sourcePaths',
+                        remote: form.sourceRemote,
+                        multiSelect: !isHashJob(form.type),
+                      })}>
+                      Browse
+                    </button>
+                  </div>
+                )}
               </div>
               {!isHashJob(form.type) && (
                 <>
@@ -513,8 +566,17 @@ export default function JobManager() {
       {browser && (
         <FileBrowser
           remote={browser.remote}
-          initialPath={form[browser.field] || ''}
-          onSelect={path => { set(browser.field, path); setBrowser(null); }}
+          initialPath={browser.multiSelect ? '' : (form[browser.field] || '')}
+          multiSelect={browser.multiSelect || false}
+          onSelect={result => {
+            if (browser.multiSelect) {
+              set('sourcePaths', Array.isArray(result) ? result : [result]);
+              set('sourcePath', '');
+            } else {
+              set(browser.field, result);
+            }
+            setBrowser(null);
+          }}
           onClose={() => setBrowser(null)}
         />
       )}

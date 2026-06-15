@@ -156,6 +156,18 @@ async function summarizeLog(logFile) {
   return result;
 }
 
+function getCommonParent(paths) {
+  if (!paths || paths.length === 0) return '';
+  const parts = paths.map(p => p.split('/').filter(Boolean));
+  const maxDepth = Math.min(...parts.map(p => p.length)) - 1;
+  const common = [];
+  for (let i = 0; i < maxDepth; i++) {
+    if (parts.every(p => p[i] === parts[0][i])) common.push(parts[0][i]);
+    else break;
+  }
+  return common.join('/');
+}
+
 function runJob(job, opts = {}) {
   const { dryRun = false } = opts;
   fs.mkdirSync(LOGS_DIR, { recursive: true });
@@ -164,8 +176,29 @@ function runJob(job, opts = {}) {
   const logFile = path.join(LOGS_DIR, `${prefix}${job.id}-${timestamp}.log`);
   const logStream = fs.createWriteStream(logFile);
 
-  const src = `${job.sourceRemote}:${job.sourcePath || ''}`;
+  // Determine source: multiple selected paths vs single path
+  let srcPath, filterArgs = [];
+  const selectedPaths = Array.isArray(job.sourcePaths) && job.sourcePaths.length > 0 ? job.sourcePaths : null;
+  if (selectedPaths && selectedPaths.length > 1) {
+    const parent = getCommonParent(selectedPaths);
+    srcPath = parent;
+    const base = parent ? parent + '/' : '';
+    for (const p of selectedPaths) {
+      const rel = p.startsWith(base) ? p.slice(base.length) : p;
+      filterArgs.push('--include', `/${rel}/**`);
+    }
+    filterArgs.push('--exclude', '/**');
+  } else {
+    srcPath = (selectedPaths && selectedPaths[0]) || job.sourcePath || '';
+  }
+
+  const src = `${job.sourceRemote}:${srcPath}`;
   const dst = `${job.destRemote}:${job.destPath || ''}`;
+
+  // Display source in logs/reports — list all paths when multiple are selected
+  const displaySrc = (selectedPaths && selectedPaths.length > 1)
+    ? selectedPaths.map(p => `${job.sourceRemote}:${p}`).join(', ')
+    : src;
 
   let baseArgs;
   if (job.type === 'mirror') {
@@ -176,12 +209,12 @@ function runJob(job, opts = {}) {
     const versionsDir = `${job.destRemote}:${job.destPath || ''}-versions/${timestamp}`;
     baseArgs = ['sync', src, dst, '--backup-dir', versionsDir];
   }
-  const args = [...baseArgs, '--log-level', 'INFO', '--stats', '2s', '--stats-one-line=false'];
+  const args = [...baseArgs, ...filterArgs, '--log-level', 'INFO', '--stats', '2s', '--stats-one-line=false'];
   if (dryRun) args.push('--dry-run');
 
   const startTime = Date.now();
   jobProgress[job.id] = { percent: 0, transferred: '', total: '', speed: '', eta: '', startTime, simulation: dryRun };
-  jobStats[job.id] = { logFile, src, dst, timestamp, startTime, simulation: dryRun };
+  jobStats[job.id] = { logFile, src: displaySrc, dst, timestamp, startTime, simulation: dryRun };
 
   return new Promise((resolve, reject) => {
     const proc = spawn('rclone', args, { env: env() });
