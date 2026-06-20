@@ -34,6 +34,7 @@ export const logs = {
 };
 
 export const reports = {
-  list: (jobId) => req(`/logs/${jobId}/reports`),
-  url:  (jobId, filename) => `${BASE}/logs/${jobId}/reports/${filename}`,
+  list:   (jobId) => req(`/logs/${jobId}/reports`),
+  url:    (jobId, filename) => `${BASE}/logs/${jobId}/reports/${filename}`,
+  remove: (jobId, filename) => req(`/logs/${jobId}/reports/${filename}`, { method: 'DELETE' }),
 };

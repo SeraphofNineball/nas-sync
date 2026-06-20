@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import RemoteManager from './components/RemoteManager.jsx';
 import JobManager from './components/JobManager.jsx';
 import Dashboard from './components/Dashboard.jsx';
+import Reports from './components/Reports.jsx';
 
 const THEMES = [
   { value: 'dark',          label: 'Dark' },
@@ -12,7 +13,7 @@ const THEMES = [
   { value: 'solarized',     label: 'Solarized' },
 ];
 
-const TABS = ['dashboard', 'jobs', 'remotes'];
+const TABS = ['dashboard', 'jobs', 'remotes', 'reports'];
 
 export default function App() {
   const [tab,   setTab]   = useState('dashboard');
@@ -52,6 +53,7 @@ export default function App() {
         {tab === 'dashboard' && <Dashboard />}
         {tab === 'jobs'      && <JobManager />}
         {tab === 'remotes'   && <RemoteManager />}
+        {tab === 'reports'   && <Reports />}
       </main>
     </div>
   );

@@ -26,6 +26,15 @@ router.get('/:jobId/reports/:filename', (req, res) => {
   res.sendFile(safe);
 });
 
+router.delete('/:jobId/reports/:filename', (req, res) => {
+  const safe = path.resolve(REPORTS_DIR, req.params.filename);
+  if (!safe.startsWith(path.resolve(REPORTS_DIR))) return res.status(403).json({ error: 'Forbidden' });
+  try {
+    if (fs.existsSync(safe)) fs.unlinkSync(safe);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 router.get('/:jobId/:filename', (req, res) => {
   const safe = path.resolve(LOGS_DIR, req.params.filename);
   if (!safe.startsWith(path.resolve(LOGS_DIR))) return res.status(403).json({ error: 'Forbidden' });
