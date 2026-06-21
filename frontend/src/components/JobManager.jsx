@@ -197,7 +197,8 @@ export default function JobManager() {
 
   const openReports = async (job) => {
     setReportJob(job); setReportFile('');
-    const files = await reportsApi.list(job.id);
+    const items = await reportsApi.list(job.id);
+    const files = items.map(r => r.filename);
     setReportFiles(files);
     if (files.length > 0) setReportFile(files[0]);
   };
