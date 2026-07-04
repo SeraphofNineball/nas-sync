@@ -3,6 +3,10 @@ services:
     image: ghcr.io/seraphofnineball/nas-sync:latest
     container_name: nas-sync
     restart: unless-stopped
+    environment:
+      # Container timezone — schedules fire at this wall-clock time and report
+      # timestamps render in this zone. Change to your own IANA zone if needed.
+      - TZ=America/New_York
     ports:
       - "3001:3000"
     volumes:

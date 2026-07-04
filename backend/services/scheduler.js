@@ -6,6 +6,11 @@ const { runHashCapture, pruneOldHashFiles } = require('./hasher');
 
 const active = {};
 
+// Cron fires in this timezone. Defaults to the container/system TZ (set via the
+// TZ env var); passing it explicitly guards against node-cron falling back to
+// UTC when TZ isn't propagated, which would fire schedules at the wrong hour.
+const cronOptions = process.env.TZ ? { timezone: process.env.TZ } : {};
+
 // Tracks job IDs that are currently executing (real run or simulation).
 // Prevents the same job from running more than once simultaneously even if the
 // cron interval is shorter than the job's runtime.
@@ -202,7 +207,7 @@ function scheduleJob(job) {
   if (active[job.id]) { active[job.id].stop(); delete active[job.id]; }
   if (!job.schedule || !job.enabled) return;
   if (!cron.validate(job.schedule)) return;
-  active[job.id] = cron.schedule(job.schedule, () => executeJob(job.id));
+  active[job.id] = cron.schedule(job.schedule, () => executeJob(job.id), cronOptions);
 }
 
 function unscheduleJob(jobId) {

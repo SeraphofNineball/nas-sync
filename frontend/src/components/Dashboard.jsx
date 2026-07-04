@@ -38,6 +38,20 @@ export default function Dashboard() {
     return () => clearTimeout(t);
   }, [jobList]);
 
+  // Background refresh so scheduled runs completing while the tab is idle
+  // (e.g. overnight) show up without a manual reload.
+  useEffect(() => {
+    const t = setInterval(loadJobs, 20000);
+    const onFocus = () => { if (!document.hidden) loadJobs(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    return () => {
+      clearInterval(t);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+    };
+  }, []);
+
   const total   = jobList.length;
   const running = jobList.filter(j => j.status === 'running').length;
   const success = jobList.filter(j => j.status === 'success').length;

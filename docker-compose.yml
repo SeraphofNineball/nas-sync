@@ -9,3 +9,6 @@ services:
       - ./data:/data
     environment:
       - DATA_DIR=/data
+      # Container timezone — schedules fire at this wall-clock time and report
+      # timestamps render in this zone. Change to your own IANA zone if needed.
+      - TZ=America/New_York

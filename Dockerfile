@@ -6,7 +6,7 @@ COPY frontend/ .
 RUN npm run build
 
 FROM node:20-alpine
-RUN apk add --no-cache rclone
+RUN apk add --no-cache rclone tzdata
 WORKDIR /app
 COPY backend/package*.json ./
 RUN npm install --production

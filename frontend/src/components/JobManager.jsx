@@ -110,6 +110,21 @@ export default function JobManager() {
     return () => clearTimeout(t);
   }, [jobList]);
 
+  // Background refresh so scheduled runs that complete while the tab sits idle
+  // (e.g. overnight) are reflected without a manual reload. Polls slowly and
+  // also refetches whenever the tab regains focus / becomes visible.
+  useEffect(() => {
+    const t = setInterval(loadJobs, 20000);
+    const onFocus = () => { if (!document.hidden) loadJobs(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    return () => {
+      clearInterval(t);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+    };
+  }, [loadJobs]);
+
   // Tick elapsed timer every second while any job is running or simulating
   useEffect(() => {
     const busy = jobList.some(j => j.status === 'running' || j.simulating);
