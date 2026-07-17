@@ -87,8 +87,8 @@ export default function Dashboard() {
 
         {/* Remote status */}
         <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-            <div className="section-label">Remote Status</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', minHeight: 28, marginBottom: 10 }}>
+            <div className="section-label" style={{ marginBottom: 0 }}>Remote Status</div>
             <button className="btn-ghost btn-sm" onClick={checkRemotes} disabled={checking}>
               {checking ? 'Checking…' : 'Refresh'}
             </button>
@@ -121,7 +121,9 @@ export default function Dashboard() {
 
         {/* Job overview */}
         <div>
-          <div className="section-label" style={{ marginBottom: 10 }}>Job Overview</div>
+          <div style={{ display: 'flex', alignItems: 'center', minHeight: 28, marginBottom: 10 }}>
+            <div className="section-label" style={{ marginBottom: 0 }}>Job Overview</div>
+          </div>
           <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
             {jobList.length === 0 ? (
               <div style={{ padding: '20px', color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>
