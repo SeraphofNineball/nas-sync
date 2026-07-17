@@ -3,6 +3,7 @@ const path = require('path');
 const helmet = require('helmet');
 const auth = require('./middleware/auth');
 const { initScheduler } = require('./services/scheduler');
+const { reconcileConfigFromCredentials } = require('./services/rclone');
 
 const app = express();
 app.use(helmet({ contentSecurityPolicy: false }));
@@ -21,5 +22,11 @@ app.get('*', (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`nas-sync running on port ${PORT}`);
+  try {
+    const fixed = reconcileConfigFromCredentials();
+    if (fixed.length) console.log(`Re-obscured rclone.conf passwords for: ${fixed.join(', ')}`);
+  } catch (err) {
+    console.error('Config reconciliation failed:', err.message);
+  }
   initScheduler();
 });

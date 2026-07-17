@@ -3,7 +3,7 @@ const fs = require('fs');
 const readline = require('readline');
 const path = require('path');
 const { DATA_DIR } = require('./store');
-const { saveCredentials, deleteCredentials, obscurePassword } = require('./credentials');
+const { saveCredentials, deleteCredentials, getAllCredentials, obscurePassword, revealPassword } = require('./credentials');
 
 const RCLONE_CONF = path.join(DATA_DIR, 'rclone.conf');
 const LOGS_DIR = path.join(DATA_DIR, 'logs');
@@ -41,23 +41,100 @@ function listRemotes() {
 
 const SAFE_IDENT = /^[A-Za-z0-9_-]+$/;
 
-function addRemote(name, type, config) {
+// Builds a single rclone.conf section. Passwords are obscured with the pure-JS
+// obscurePassword (rather than spawning `rclone obscure`) so the plaintext is
+// never visible in the OS process list.
+function buildConfigEntry(name, type, config) {
   if (!SAFE_IDENT.test(name)) throw new Error('Remote name may only contain letters, digits, hyphens and underscores');
   if (!SAFE_IDENT.test(type)) throw new Error('Remote type may only contain letters, digits, hyphens and underscores');
-  ensureConf();
-  saveCredentials(name, { type, ...config });
-  let entry = `\n[${name}]\ntype = ${type}\n`;
+  let entry = `[${name}]\ntype = ${type}\n`;
   for (const [key, value] of Object.entries(config)) {
     if (!value) continue;
     if (!SAFE_IDENT.test(key)) throw new Error(`Invalid config key: ${key}`);
     if (/[\r\n]/.test(String(value))) throw new Error(`Config value for '${key}' must not contain newlines`);
-    // Use pure-JS obscurePassword instead of spawning a subprocess so the
-    // plaintext password is never visible in the OS process list.
     entry += key === 'pass'
       ? `pass = ${obscurePassword(value)}\n`
       : `${key} = ${value}\n`;
   }
-  fs.appendFileSync(RCLONE_CONF, entry);
+  return entry;
+}
+
+function addRemote(name, type, config) {
+  ensureConf();
+  saveCredentials(name, { type, ...config });
+  fs.appendFileSync(RCLONE_CONF, '\n' + buildConfigEntry(name, type, config));
+}
+
+// Splits an rclone.conf into named sections, preserving order and the raw lines
+// of each section body.
+function parseConfSections(text) {
+  const sections = {};
+  const order = [];
+  let current = null;
+  for (const line of text.split(/\r?\n/)) {
+    const m = line.match(/^\s*\[([^\]]+)\]\s*$/);
+    if (m) {
+      current = m[1];
+      if (!(current in sections)) { sections[current] = []; order.push(current); }
+      continue;
+    }
+    if (current) sections[current].push(line);
+  }
+  return { sections, order };
+}
+
+// Self-heals rclone.conf on startup from the encrypted credentials store (the
+// source of truth, which holds plaintext passwords). Any remote whose config
+// `pass` cannot be revealed back to the stored plaintext — e.g. entries written
+// by the old broken obscure implementation, or after a redeploy — is rewritten
+// with a correctly-obscured value. Sections not present in the credentials
+// store (if any) are preserved verbatim. Returns the names that were fixed.
+function reconcileConfigFromCredentials() {
+  let creds;
+  try { creds = getAllCredentials(); } catch { return []; }
+  const names = Object.keys(creds);
+  if (names.length === 0) return [];
+
+  ensureConf();
+  const text = fs.existsSync(RCLONE_CONF) ? fs.readFileSync(RCLONE_CONF, 'utf8') : '';
+  const { sections, order } = parseConfSections(text);
+
+  const needsFix = new Set();
+  for (const name of names) {
+    const stored = creds[name] || {};
+    if (!stored.pass) continue; // nothing secret to verify
+    const lines = sections[name];
+    if (!lines) { needsFix.add(name); continue; } // known credential missing from conf
+    const passLine = lines.find(l => /^\s*pass\s*=/.test(l));
+    const current = passLine ? passLine.replace(/^\s*pass\s*=\s*/, '').trim() : '';
+    let ok = false;
+    try { ok = revealPassword(current) === stored.pass; } catch { ok = false; }
+    if (!ok) needsFix.add(name);
+  }
+  if (needsFix.size === 0) return [];
+
+  const blocks = [];
+  const emitted = new Set();
+  for (const name of order) {
+    if (emitted.has(name)) continue;
+    emitted.add(name);
+    if (needsFix.has(name)) {
+      const { type, ...cfg } = creds[name];
+      blocks.push(buildConfigEntry(name, type, cfg).trim());
+    } else {
+      blocks.push(`[${name}]\n${sections[name].join('\n')}`.trim());
+    }
+  }
+  for (const name of needsFix) {
+    if (emitted.has(name)) continue; // in creds but never in the conf file
+    emitted.add(name);
+    const { type, ...cfg } = creds[name];
+    blocks.push(buildConfigEntry(name, type, cfg).trim());
+  }
+
+  fs.writeFileSync(RCLONE_CONF, blocks.join('\n\n') + '\n', { mode: 0o600 });
+  try { fs.chmodSync(RCLONE_CONF, 0o600); } catch { /* Windows: no-op */ }
+  return [...needsFix];
 }
 
 function deleteRemote(name) {
@@ -537,7 +614,7 @@ function pruneOldFiles(jobId, keepN = 20) {
 }
 
 module.exports = {
-  listRemotes, addRemote, deleteRemote, browseRemote,
+  listRemotes, addRemote, deleteRemote, browseRemote, reconcileConfigFromCredentials,
   runJob, stopJob, stopAllJobs, getProgress, getJobStats, cleanupJobState,
   checkRemote,
   summarizeLog, runIntegrityCheck, generateReport, listReports,

@@ -27,6 +27,17 @@ function obscurePassword(plaintext) {
   return Buffer.concat([iv, ciphertext]).toString('base64url');
 }
 
+// Inverse of obscurePassword, matching rclone's Reveal(). Throws on a value that
+// isn't a valid obscured password (e.g. shorter than the 16-byte IV). Used to
+// detect config entries written by the old, broken obscure implementation.
+function revealPassword(obscured) {
+  const buf = Buffer.from(obscured, 'base64url');
+  if (buf.length < 16) throw new Error('input too short when revealing password');
+  const iv = buf.subarray(0, 16);
+  const decipher = crypto.createDecipheriv('aes-256-ctr', RCLONE_CRYPT_KEY, iv);
+  return Buffer.concat([decipher.update(buf.subarray(16)), decipher.final()]).toString('utf8');
+}
+
 function getOrCreateKey() {
   // Prefer an externally-injected key (e.g. Docker secret / env var) so the
   // key is never co-located with the encrypted data on the same volume.
@@ -108,4 +119,4 @@ function getAllCredentials() {
   return result;
 }
 
-module.exports = { saveCredentials, getCredentials, deleteCredentials, getAllCredentials, obscurePassword };
+module.exports = { saveCredentials, getCredentials, deleteCredentials, getAllCredentials, obscurePassword, revealPassword };
