@@ -7,12 +7,15 @@ const KEY_FILE = path.join(DATA_DIR, '.key');
 const CREDS_FILE = path.join(DATA_DIR, 'credentials.enc');
 const ALGORITHM = 'aes-256-gcm';
 
-// rclone's fixed AES-256 key, from rclone/fs/config/obscure/obscure.go (32 bytes).
+// rclone's fixed AES-256 key, verbatim from rclone/fs/config/obscure/obscure.go
+// (32 bytes). Must match exactly — rclone reveals config `pass` fields with this
+// key, so any deviation makes it decode passwords to garbage and every SMB/etc.
+// login fails with "logon invalid". Verified against `rclone obscure` output.
 const RCLONE_CRYPT_KEY = Buffer.from([
   0x9c, 0x93, 0x5b, 0x48, 0x73, 0x0a, 0x55, 0x4d,
   0x6b, 0xfd, 0x7c, 0x63, 0xc8, 0x86, 0xa9, 0x2b,
-  0xd0, 0xcb, 0xd5, 0x0d, 0x27, 0xa2, 0x8e, 0x78,
-  0xa3, 0x03, 0x6b, 0x8e, 0x11, 0x04, 0x79, 0xd9,
+  0xd3, 0x90, 0x19, 0x8e, 0xb8, 0x12, 0x8a, 0xfb,
+  0xf4, 0xde, 0x16, 0x2b, 0x8b, 0x95, 0xf6, 0x38,
 ]);
 
 // Matches rclone's Obscure() so rclone can Reveal() the value from a config
