@@ -7,26 +7,24 @@ const KEY_FILE = path.join(DATA_DIR, '.key');
 const CREDS_FILE = path.join(DATA_DIR, 'credentials.enc');
 const ALGORITHM = 'aes-256-gcm';
 
-// rclone's fixed XOR key, from rclone/fs/config/obscure/obscure.go
+// rclone's fixed AES-256 key, from rclone/fs/config/obscure/obscure.go (32 bytes).
 const RCLONE_CRYPT_KEY = Buffer.from([
   0x9c, 0x93, 0x5b, 0x48, 0x73, 0x0a, 0x55, 0x4d,
   0x6b, 0xfd, 0x7c, 0x63, 0xc8, 0x86, 0xa9, 0x2b,
   0xd0, 0xcb, 0xd5, 0x0d, 0x27, 0xa2, 0x8e, 0x78,
   0xa3, 0x03, 0x6b, 0x8e, 0x11, 0x04, 0x79, 0xd9,
-  0x7e, 0x93, 0x7f, 0xae, 0xe6, 0xa1, 0x4c, 0x50,
-  0x65, 0x53, 0x04, 0x62, 0xe5, 0xb7, 0x7c, 0x87,
 ]);
 
-// Matches rclone's Obscure() — produces a value rclone can consume as a password field.
+// Matches rclone's Obscure() so rclone can Reveal() the value from a config
+// `pass` field: AES-256-CTR with a random 16-byte IV prepended, then base64url
+// (raw/unpadded). rclone reads the IV from the first 16 bytes, so the output
+// MUST be iv || ciphertext — otherwise rclone rejects it with
+// "input too short when revealing password - is it obscured?".
 function obscurePassword(plaintext) {
-  const plain = Buffer.from(plaintext, 'utf8');
-  const buf = Buffer.alloc(plain.length + 1);
-  buf[0] = crypto.randomBytes(1)[0];
-  const offset = buf[0] % RCLONE_CRYPT_KEY.length;
-  for (let i = 0; i < plain.length; i++) {
-    buf[i + 1] = plain[i] ^ RCLONE_CRYPT_KEY[(offset + i) % RCLONE_CRYPT_KEY.length];
-  }
-  return buf.toString('base64url');
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv('aes-256-ctr', RCLONE_CRYPT_KEY, iv);
+  const ciphertext = Buffer.concat([cipher.update(Buffer.from(plaintext, 'utf8')), cipher.final()]);
+  return Buffer.concat([iv, ciphertext]).toString('base64url');
 }
 
 function getOrCreateKey() {
