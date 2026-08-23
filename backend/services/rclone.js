@@ -3,7 +3,7 @@ const fs = require('fs');
 const readline = require('readline');
 const path = require('path');
 const { DATA_DIR } = require('./store');
-const { saveCredentials, deleteCredentials, getAllCredentials, obscurePassword, revealPassword } = require('./credentials');
+const { saveCredentials, getCredentials, deleteCredentials, getAllCredentials, obscurePassword, revealPassword } = require('./credentials');
 
 const RCLONE_CONF = path.join(DATA_DIR, 'rclone.conf');
 const LOGS_DIR = path.join(DATA_DIR, 'logs');
@@ -63,6 +63,30 @@ function addRemote(name, type, config) {
   ensureConf();
   saveCredentials(name, { type, ...config });
   fs.appendFileSync(RCLONE_CONF, '\n' + buildConfigEntry(name, type, config));
+}
+
+// Fields that hold secrets. Never echoed back to the client — the edit form
+// shows them blank and a blank value on save means "keep the current secret".
+const SECRET_FIELDS = new Set(['pass', 'secret_access_key']);
+
+// Returns a remote's type/config for prefilling the edit form. Secret fields
+// are replaced with '' (the stored plaintext never leaves the server); hasSecret
+// tells the client whether a value is actually set, so it can render a
+// "leave blank to keep current" placeholder instead of an empty required field.
+function getRemoteConfig(name) {
+  const stored = getCredentials(name);
+  const { type, ...config } = stored;
+  const safeConfig = {};
+  const hasSecret = {};
+  for (const [key, value] of Object.entries(config)) {
+    if (SECRET_FIELDS.has(key)) {
+      hasSecret[key] = !!value;
+      safeConfig[key] = '';
+    } else {
+      safeConfig[key] = value;
+    }
+  }
+  return { type, config: safeConfig, hasSecret };
 }
 
 // Splits an rclone.conf into named sections, preserving order and the raw lines
@@ -140,6 +164,45 @@ function reconcileConfigFromCredentials() {
 function deleteRemote(name) {
   rclone(['config', 'delete', name]);
   deleteCredentials(name);
+}
+
+// Edits an existing remote in place, optionally renaming it. Secret fields
+// (see SECRET_FIELDS) that arrive blank keep their previously stored value
+// rather than being wiped, since the client never receives the real secret
+// back from getRemoteConfig(). Non-secret fields are taken as given, so
+// clearing an optional field in the form actually clears it.
+function updateRemote(oldName, newName, type, config) {
+  ensureConf();
+  if (!SAFE_IDENT.test(newName)) throw new Error('Remote name may only contain letters, digits, hyphens and underscores');
+
+  const existing = getCredentials(oldName);
+  const merged = {};
+  for (const [key, value] of Object.entries(config || {})) {
+    if (SECRET_FIELDS.has(key) && !value) {
+      if (existing[key]) merged[key] = existing[key];
+      continue;
+    }
+    merged[key] = value;
+  }
+
+  saveCredentials(newName, { type, ...merged });
+  if (newName !== oldName) deleteCredentials(oldName);
+
+  const text = fs.existsSync(RCLONE_CONF) ? fs.readFileSync(RCLONE_CONF, 'utf8') : '';
+  const { sections, order } = parseConfSections(text);
+  const entry = buildConfigEntry(newName, type, merged).trim();
+
+  const blocks = [];
+  let replaced = false;
+  for (const name of order) {
+    if (name === oldName) { blocks.push(entry); replaced = true; }
+    else if (name === newName) { /* old, stale duplicate of the renamed-to section; drop it */ }
+    else blocks.push(`[${name}]\n${sections[name].join('\n')}`.trim());
+  }
+  if (!replaced) blocks.push(entry);
+
+  fs.writeFileSync(RCLONE_CONF, blocks.join('\n\n') + '\n', { mode: 0o600 });
+  try { fs.chmodSync(RCLONE_CONF, 0o600); } catch { /* Windows: no-op */ }
 }
 
 function browseRemote(name, remotePath = '') {
@@ -614,7 +677,7 @@ function pruneOldFiles(jobId, keepN = 20) {
 }
 
 module.exports = {
-  listRemotes, addRemote, deleteRemote, browseRemote, reconcileConfigFromCredentials,
+  listRemotes, addRemote, updateRemote, getRemoteConfig, deleteRemote, browseRemote, reconcileConfigFromCredentials,
   runJob, stopJob, stopAllJobs, getProgress, getJobStats, cleanupJobState,
   checkRemote,
   summarizeLog, runIntegrityCheck, generateReport, listReports,

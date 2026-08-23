@@ -11,7 +11,9 @@ async function req(url, opts = {}) {
 
 export const remotes = {
   list: () => req('/remotes'),
+  get: (name) => req(`/remotes/${encodeURIComponent(name)}`),
   add: (data) => req('/remotes', { method: 'POST', body: data }),
+  update: (name, data) => req(`/remotes/${encodeURIComponent(name)}`, { method: 'PUT', body: data }),
   remove: (name) => req(`/remotes/${name}`, { method: 'DELETE' }),
   browse: (name, path = '') => req(`/remotes/${encodeURIComponent(name)}/browse?path=${encodeURIComponent(path)}`),
   status: () => req('/remotes/status'),
