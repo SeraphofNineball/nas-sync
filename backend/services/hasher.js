@@ -2,6 +2,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { DATA_DIR } = require('./store');
+const { resolveRemoteArg } = require('./rclone');
 
 const RCLONE_CONF = path.join(DATA_DIR, 'rclone.conf');
 const HASHDB_DIR = path.join(DATA_DIR, 'hashdb');
@@ -33,7 +34,7 @@ function fmtDuration(ms) {
 }
 
 function captureRemoteHashes(jobId, remote, remotePath) {
-  const target = remotePath ? `${remote}:${remotePath}` : `${remote}:`;
+  const target = resolveRemoteArg(remote, remotePath || '');
   return new Promise((resolve, reject) => {
     const chunks = [];
     const errChunks = [];

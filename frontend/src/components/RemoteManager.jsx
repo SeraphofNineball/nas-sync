@@ -2,7 +2,10 @@ import { useState, useEffect } from 'react';
 import { remotes as api } from '../api.js';
 
 const TYPES = {
-  local:  { label: 'Local / Mounted Path', fields: [] },
+  local:  { label: 'Local / Mounted Path', fields: [
+    { key: 'path', label: 'Root Path', required: true, placeholder: '/mnt/@usb/sde2',
+      hint: 'Absolute path as seen inside the nas-sync container. Browsing and jobs for this remote are scoped to this directory.' },
+  ]},
   smb:    { label: 'SMB / Windows Share', fields: [
     { key: 'host', label: 'Host / IP', required: true },
     { key: 'user', label: 'Username' },
@@ -177,6 +180,7 @@ export default function RemoteManager() {
                   value={form.config[f.key] || ''}
                   onChange={e => setConfig(f.key, e.target.value)}
                 />
+                {f.hint && <p style={{ color: 'var(--muted)', fontSize: 12, marginTop: 4 }}>{f.hint}</p>}
               </div>
             ))}
 

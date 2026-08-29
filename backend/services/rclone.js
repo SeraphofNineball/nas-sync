@@ -41,6 +41,23 @@ function listRemotes() {
 
 const SAFE_IDENT = /^[A-Za-z0-9_-]+$/;
 
+// App-only config keys: stored in the credentials store and consumed by
+// resolveRemoteArg(), but never written to rclone.conf (they are not rclone
+// backend options). `path` is the root directory of a `local` remote.
+const APP_ONLY_KEYS = new Set(['path']);
+
+// Rejects a `local` remote whose root path is missing or not absolute. rclone's
+// local backend has no config option for the root, so we keep it in the
+// credentials store and prepend it to every path — which only works sanely if
+// it is an absolute path inside the container.
+function assertValidLocalRoot(type, config) {
+  if (type !== 'local') return;
+  const p = String(config.path || '').trim();
+  if (!p) throw new Error('Local / Mounted Path remotes need a Root Path (e.g. /mnt/@usb/sde2)');
+  if (!p.startsWith('/')) throw new Error('Root Path must be absolute (start with /)');
+  if (/[\r\n]/.test(p)) throw new Error('Root Path must not contain newlines');
+}
+
 // Builds a single rclone.conf section. Passwords are obscured with the pure-JS
 // obscurePassword (rather than spawning `rclone obscure`) so the plaintext is
 // never visible in the OS process list.
@@ -50,6 +67,7 @@ function buildConfigEntry(name, type, config) {
   let entry = `[${name}]\ntype = ${type}\n`;
   for (const [key, value] of Object.entries(config)) {
     if (!value) continue;
+    if (APP_ONLY_KEYS.has(key)) continue;
     if (!SAFE_IDENT.test(key)) throw new Error(`Invalid config key: ${key}`);
     if (/[\r\n]/.test(String(value))) throw new Error(`Config value for '${key}' must not contain newlines`);
     entry += key === 'pass'
@@ -59,8 +77,32 @@ function buildConfigEntry(name, type, config) {
   return entry;
 }
 
+// Returns the stored root directory for a `local` remote, or '' for any other
+// remote (whose paths are already relative to the backend's own root).
+function remoteRoot(name) {
+  try {
+    const c = getCredentials(name);
+    if (c && c.type === 'local' && c.path) return String(c.path).replace(/\/+$/, '');
+  } catch { /* credentials unreadable — treat as no root */ }
+  return '';
+}
+
+// Joins a remote's stored root with a user-facing sub-path into the full
+// `name:path` argument for rclone. A sub-path that is already absolute is used
+// as-is, so jobs created before a root was configured (and the "type the full
+// path" workaround) keep working. Non-local remotes are an unchanged passthrough.
+function resolveRemoteArg(name, subPath = '') {
+  const root = remoteRoot(name);
+  let p = subPath || '';
+  if (root && !p.startsWith('/')) {
+    p = p ? `${root}/${p.replace(/^\/+/, '')}` : root;
+  }
+  return `${name}:${p}`;
+}
+
 function addRemote(name, type, config) {
   ensureConf();
+  assertValidLocalRoot(type, config);
   saveCredentials(name, { type, ...config });
   fs.appendFileSync(RCLONE_CONF, '\n' + buildConfigEntry(name, type, config));
 }
@@ -185,6 +227,7 @@ function updateRemote(oldName, newName, type, config) {
     merged[key] = value;
   }
 
+  assertValidLocalRoot(type, merged);
   saveCredentials(newName, { type, ...merged });
   if (newName !== oldName) deleteCredentials(oldName);
 
@@ -206,9 +249,8 @@ function updateRemote(oldName, newName, type, config) {
 }
 
 function browseRemote(name, remotePath = '') {
-  const target = remotePath ? `${name}:${remotePath}` : `${name}:`;
   try {
-    return JSON.parse(rclone(['lsjson', target]));
+    return JSON.parse(rclone(['lsjson', resolveRemoteArg(name, remotePath)]));
   } catch {
     return [];
   }
@@ -223,7 +265,7 @@ function checkRemote(name) {
       resolve({ name, status });
     };
     const timer = setTimeout(() => { proc.kill(); done('offline'); }, 10000);
-    const proc = spawn('rclone', ['lsf', `${name}:`, '--max-depth', '1'], { env: env() });
+    const proc = spawn('rclone', ['lsf', resolveRemoteArg(name), '--max-depth', '1'], { env: env() });
     proc.on('close', code => { clearTimeout(timer); done(code === 0 ? 'online' : 'offline'); });
     proc.on('error', () => { clearTimeout(timer); done('offline'); });
   });
@@ -332,12 +374,12 @@ function runJob(job, opts = {}) {
     srcPath = (selectedPaths && selectedPaths[0]) || job.sourcePath || '';
   }
 
-  const src = `${job.sourceRemote}:${srcPath}`;
-  const dst = `${job.destRemote}:${job.destPath || ''}`;
+  const src = resolveRemoteArg(job.sourceRemote, srcPath);
+  const dst = resolveRemoteArg(job.destRemote, job.destPath || '');
 
   // Display source in logs/reports — list all paths when multiple are selected
   const displaySrc = (selectedPaths && selectedPaths.length > 1)
-    ? selectedPaths.map(p => `${job.sourceRemote}:${p}`).join(', ')
+    ? selectedPaths.map(p => resolveRemoteArg(job.sourceRemote, p)).join(', ')
     : src;
 
   let baseArgs;
@@ -346,7 +388,7 @@ function runJob(job, opts = {}) {
   } else if (job.type === 'sync') {
     baseArgs = ['copy', src, dst];
   } else {
-    const versionsDir = `${job.destRemote}:${job.destPath || ''}-versions/${timestamp}`;
+    const versionsDir = resolveRemoteArg(job.destRemote, `${job.destPath || ''}-versions/${timestamp}`);
     baseArgs = ['sync', src, dst, '--backup-dir', versionsDir];
   }
   const args = [...baseArgs, ...filterArgs, '--log-level', 'INFO', '--stats', '2s', '--stats-one-line=false'];
@@ -425,8 +467,8 @@ function cleanupJobState(jobId) {
 // Collects stderr/stdout into capped Buffer arrays to avoid unbounded string
 // concatenation and potential OOM for very large rclone check output.
 function runIntegrityCheck(job) {
-  const src = `${job.sourceRemote}:${job.sourcePath || ''}`;
-  const dst = `${job.destRemote}:${job.destPath || ''}`;
+  const src = resolveRemoteArg(job.sourceRemote, job.sourcePath || '');
+  const dst = resolveRemoteArg(job.destRemote, job.destPath || '');
   const args = ['check', src, dst, '--size-only'];
   if (job.type === 'sync') args.push('--one-way');
 
@@ -677,7 +719,7 @@ function pruneOldFiles(jobId, keepN = 20) {
 }
 
 module.exports = {
-  listRemotes, addRemote, updateRemote, getRemoteConfig, deleteRemote, browseRemote, reconcileConfigFromCredentials,
+  listRemotes, addRemote, updateRemote, getRemoteConfig, deleteRemote, browseRemote, resolveRemoteArg, reconcileConfigFromCredentials,
   runJob, stopJob, stopAllJobs, getProgress, getJobStats, cleanupJobState,
   checkRemote,
   summarizeLog, runIntegrityCheck, generateReport, listReports,

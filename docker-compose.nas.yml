@@ -12,4 +12,11 @@ services:
     volumes:
       - ./data:/data
       - /volume1:/volume1
-      - /mnt/@usb:/mnt/@usb
+      # USB drives auto-mount as sub-mounts under /mnt/@usb (e.g. /mnt/@usb/sde2).
+      # rslave propagation makes those appear in the container even when the drive
+      # is plugged in or remounted after the container has already started.
+      - type: bind
+        source: /mnt/@usb
+        target: /mnt/@usb
+        bind:
+          propagation: rslave
