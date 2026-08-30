@@ -50,7 +50,7 @@ const EMPTY_FORM = {
   sourceRemote: '', sourcePath: '', sourcePaths: [], destRemote: '', destPath: '',
   scheduleMode: 'manual', scheduleTime: '02:00',
   scheduleDow: '0', scheduleDom: '1', customSchedule: '',
-  enabled: true,
+  enabled: true, deleteBefore: false, trackRenames: false,
 };
 
 function isHashJob(type) { return type === 'hash-capture'; }
@@ -147,6 +147,8 @@ export default function JobManager() {
       destRemote: job.destRemote || '',     destPath: job.destPath || '',
       ...parseCron(job.schedule),
       enabled: job.enabled,
+      deleteBefore: !!job.deleteBefore,
+      trackRenames: !!job.trackRenames,
     });
     setError(''); setShowForm(true);
   };
@@ -164,6 +166,8 @@ export default function JobManager() {
       sourcePaths: form.sourcePaths,
       destRemote: form.destRemote, destPath: form.destPath,
       schedule, enabled: form.enabled,
+      deleteBefore: form.deleteBefore,
+      trackRenames: form.trackRenames,
     };
     const res = editing ? await jobsApi.update(editing, payload) : await jobsApi.create(payload);
     setSaving(false);
@@ -275,6 +279,8 @@ export default function JobManager() {
                     </div>
                     <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
                       Schedule: {scheduleLabel(job)}
+                      {job.deleteBefore && (job.type === 'mirror' || job.type === 'backup') && ' · Deletes first'}
+                      {job.trackRenames && (job.type === 'mirror' || job.type === 'backup') && ' · Tracks renames'}
                       {job.lastRun && ` · Last run: ${new Date(job.lastRun).toLocaleString()}`}
                     </div>
                     {job.lastError && job.status === 'failed' && (
@@ -559,6 +565,35 @@ export default function JobManager() {
               <div className="field">
                 <label>Cron Expression</label>
                 <input value={form.customSchedule} onChange={e => set('customSchedule', e.target.value)} placeholder="0 2 * * *" />
+              </div>
+            )}
+
+            {(form.type === 'mirror' || form.type === 'backup') && (
+              <div className="field" style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                <input type="checkbox" id="deleteBefore" style={{ width: 'auto', marginTop: 3 }}
+                  checked={form.deleteBefore} onChange={e => set('deleteBefore', e.target.checked)} />
+                <label htmlFor="deleteBefore" style={{ margin: 0, cursor: 'pointer' }}>
+                  Delete before copying
+                  <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)', fontWeight: 400 }}>
+                    {form.type === 'backup'
+                      ? 'Move extraneous destination files into the versions folder before transferring, not during.'
+                      : 'Remove extraneous destination files before transferring, not during.'}
+                    {' '}Frees space first on a near-full destination; slower to start.
+                  </span>
+                </label>
+              </div>
+            )}
+
+            {(form.type === 'mirror' || form.type === 'backup') && (
+              <div className="field" style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                <input type="checkbox" id="trackRenames" style={{ width: 'auto', marginTop: 3 }}
+                  checked={form.trackRenames} onChange={e => set('trackRenames', e.target.checked)} />
+                <label htmlFor="trackRenames" style={{ margin: 0, cursor: 'pointer' }}>
+                  Detect renamed / moved files
+                  <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)', fontWeight: 400 }}>
+                    When a file is renamed or moved at the source, rename it on the destination instead of deleting and re-transferring it. Matches by size + hash; needs a destination that supports server-side move. Slower to start on large sets.
+                  </span>
+                </label>
               </div>
             )}
 

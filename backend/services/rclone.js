@@ -392,6 +392,16 @@ function runJob(job, opts = {}) {
     baseArgs = ['sync', src, dst, '--backup-dir', versionsDir];
   }
   const args = [...baseArgs, ...filterArgs, '--log-level', 'INFO', '--stats', '2s', '--stats-one-line=false'];
+  // Default rclone behaviour is --delete-during (deletes interleaved with the
+  // copy). --delete-before clears extraneous destination files up front, which
+  // frees space first on a near-full destination. Only meaningful for the
+  // delete-capable types (mirror/backup); `sync` runs `rclone copy` and never
+  // deletes, so the flag would be a no-op.
+  if (job.deleteBefore && job.type !== 'sync') args.push('--delete-before');
+  // --track-renames converts a source-side rename/move from delete+re-transfer
+  // into a server-side move on the destination (matched by size+hash). Same
+  // mirror/backup-only applicability as --delete-before.
+  if (job.trackRenames && job.type !== 'sync') args.push('--track-renames');
   if (dryRun) args.push('--dry-run');
 
   const startTime = Date.now();
@@ -629,6 +639,16 @@ ${isSim ? `<div class="rpt-warn">&#9888; DRY-RUN SIMULATION &mdash; no files wer
 <tr><td class="rpt-lbl">Start Time</td><td class="rpt-val">${esc(startISO)}</td>
     <td class="rpt-lbl">End Time</td><td class="rpt-val">${esc(endISO)} (${dur})</td></tr>
 <tr><td class="rpt-lbl">Trigger</td><td colspan="3" class="rpt-val">Manual / Scheduled</td></tr>
+<tr><td class="rpt-lbl">Deletions</td><td colspan="3" class="rpt-val">${
+  job.type === 'sync' ? 'n/a — copy only, never deletes'
+  : job.deleteBefore ? 'Before transfer (--delete-before)'
+  : 'During transfer (rclone default)'
+}</td></tr>
+<tr><td class="rpt-lbl">Rename tracking</td><td colspan="3" class="rpt-val">${
+  job.type === 'sync' ? 'n/a — copy only'
+  : job.trackRenames ? 'On — renamed/moved files moved server-side (--track-renames)'
+  : 'Off — renamed files re-transferred'
+}</td></tr>
 </table>
 <br>
 
