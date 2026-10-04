@@ -1,5 +1,6 @@
 const { execFileSync, spawn } = require('child_process');
 const fs = require('fs');
+const os = require('os');
 const readline = require('readline');
 const path = require('path');
 const { DATA_DIR } = require('./store');
@@ -311,9 +312,16 @@ async function summarizeLog(logFile) {
     copied: [], copiedTotal: 0,
     deleted: [], deletedTotal: 0,
     updated: [], updatedTotal: 0,
+    renamed: [], renamedTotal: 0,
     errors: [], errorsTotal: 0,
   };
   if (!fs.existsSync(logFile)) return result;
+
+  // Paths handled by the rename pre-pass. In a dry run the moves are not
+  // applied, so the sync that follows still reports them as a copy + delete;
+  // those lines are dropped so the simulation matches what a real run does.
+  const renamedTo = new Set();
+  const renamedFrom = new Set();
 
   await new Promise((resolve, reject) => {
     const rl = readline.createInterface({
@@ -322,10 +330,22 @@ async function summarizeLog(logFile) {
     });
     rl.on('line', raw => {
       const line = raw.replace(/\x1b\[[0-9;]*[mGKHF]/g, '');
-      let m = line.match(/(?:INFO|NOTICE)\s*:\s+(.+?):\s+(?:Copied\b|Skipped copy as --dry-run)/);
-      if (m) { result.copiedTotal++; result.copied.push(m[1]); return; }
+      let m = line.match(/(?:INFO|NOTICE)\s*:\s+(.+?):\s+(?:Renamed from|Skipped rename as --dry-run from) "(.*)"\s*$/);
+      if (m) {
+        result.renamedTotal++; result.renamed.push(`${m[2]} → ${m[1]}`);
+        renamedTo.add(m[1]); renamedFrom.add(m[2]);
+        return;
+      }
+      m = line.match(/(?:INFO|NOTICE)\s*:\s+(.+?):\s+(?:Copied\b|Skipped copy as --dry-run)/);
+      if (m) {
+        if (renamedTo.has(m[1])) return;
+        result.copiedTotal++; result.copied.push(m[1]); return;
+      }
       m = line.match(/(?:INFO|NOTICE)\s*:\s+(.+?):\s+(?:Deleted\b|Skipped delete as --dry-run)/);
-      if (m) { result.deletedTotal++; result.deleted.push(m[1]); return; }
+      if (m) {
+        if (renamedFrom.has(m[1])) return;
+        result.deletedTotal++; result.deleted.push(m[1]); return;
+      }
       m = line.match(/(?:INFO|NOTICE)\s*:\s+(.+?):\s+(?:Updated\b|Skipped update as --dry-run)/);
       if (m) { result.updatedTotal++; result.updated.push(m[1]); return; }
       m = line.match(/ERROR\s*:\s+(.+?):\s+(.+)/);
@@ -350,7 +370,203 @@ function getCommonParent(paths) {
   return common.join('/');
 }
 
-function runJob(job, opts = {}) {
+function fmtBytes(n) {
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return `${i ? n.toFixed(2) : n} ${units[i]}`;
+}
+
+function joinRemote(base, rel) {
+  return /[:/]$/.test(base) ? base + rel : `${base}/${rel}`;
+}
+
+// Runs an rclone command registered with the job's controller (so Stop can
+// kill it) and resolves { code, stdout, stderr } with capped output.
+function runTracked(ctl, args) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn('rclone', args, { env: env() });
+    ctl.procs.add(proc);
+    let stdout = '', stderr = '';
+    proc.stdout.on('data', d => { if (stdout.length < 65536) stdout += d; });
+    proc.stderr.on('data', d => { if (stderr.length < 4096) stderr += d; });
+    proc.on('close', code => { ctl.procs.delete(proc); resolve({ code, stdout, stderr }); });
+    proc.on('error', err => { ctl.procs.delete(proc); reject(err); });
+  });
+}
+
+// Recursively lists the files under a remote as Map(path -> { size, mod, md5 }).
+// lsjson emits one entry per line, so the output is parsed as a stream rather
+// than buffered whole. With allowMissing, a directory that does not exist yet
+// (rclone exit code 3) is an empty listing instead of an error.
+function listFiles(ctl, remote, extraArgs = [], allowMissing = false) {
+  return new Promise((resolve, reject) => {
+    const files = new Map();
+    const proc = spawn('rclone', ['lsjson', '-R', '--files-only', '--no-mimetype', remote, ...extraArgs], { env: env() });
+    ctl.procs.add(proc);
+    let stderr = '';
+    proc.stderr.on('data', d => { if (stderr.length < 4096) stderr += d; });
+
+    const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity });
+    rl.on('line', raw => {
+      const line = raw.trim().replace(/,$/, '');
+      if (!line.startsWith('{')) return;
+      try {
+        const e = JSON.parse(line);
+        files.set(e.Path, { size: e.Size, mod: Date.parse(e.ModTime), md5: e.Hashes && e.Hashes.md5 });
+      } catch { /* skip unparseable line */ }
+    });
+    const drained = new Promise(res => rl.on('close', res));
+
+    proc.on('close', async code => {
+      ctl.procs.delete(proc);
+      await drained;
+      if (code === 0 || (allowMissing && code === 3)) resolve(files);
+      else reject(new Error(`Listing ${remote} failed (rclone exit ${code}): ${stderr.trim().split('\n').pop() || ''}`));
+    });
+    proc.on('error', err => { ctl.procs.delete(proc); reject(err); });
+  });
+}
+
+// MD5s just the given paths (relative to the remote). Remotes with no MD5
+// support return entries without a hash, which simply never match.
+async function hashFiles(ctl, remote, paths) {
+  const listFile = path.join(os.tmpdir(), `nas-sync-hash-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
+  await fs.promises.writeFile(listFile, paths.join('\n') + '\n');
+  try {
+    return await listFiles(ctl, remote, ['--hash', '--hash-type', 'md5', '--files-from-raw', listFile]);
+  } finally {
+    fs.promises.unlink(listFile).catch(() => {});
+  }
+}
+
+// Rename pre-pass for jobs with both "delete before copying" and "detect
+// renames" on. rclone cannot combine --track-renames with --delete-before (it
+// silently falls back to --delete-after, the worst order for a near-full
+// destination), so renames are resolved here and the sync that follows runs
+// with --delete-before alone:
+//   1. list both sides and pair source-only with destination-only files of the
+//      same size + MD5 (only size-matched candidates are hashed)
+//   2. check the destination has room once the deletions have happened
+//   3. move each paired file into place on the destination
+// A failed move is logged and left for the sync to handle as copy + delete.
+async function renamePrePass(ctl, { job, src, dst, filterArgs, dryRun, log, setPhase }) {
+  const stopIfCancelled = () => { if (ctl.cancelled) throw new Error('Job stopped by user'); };
+
+  setPhase('Scanning for renames…');
+  const [srcFiles, dstFiles] = await Promise.all([
+    listFiles(ctl, src, filterArgs),
+    listFiles(ctl, dst, filterArgs, true),
+  ]);
+  stopIfCancelled();
+
+  // Source-only / destination-only files, grouped by size. Empty files are
+  // skipped: they all hash alike and cost nothing to re-create.
+  const onlyBySize = (a, b) => {
+    const out = new Map();
+    for (const [p, f] of a) {
+      if (b.has(p) || !(f.size > 0)) continue;
+      if (!out.has(f.size)) out.set(f.size, []);
+      out.get(f.size).push(p);
+    }
+    return out;
+  };
+  const srcOnly = onlyBySize(srcFiles, dstFiles);
+  const dstOnly = onlyBySize(dstFiles, srcFiles);
+  const srcCand = [], dstCand = [];
+  for (const [size, paths] of srcOnly) {
+    const others = dstOnly.get(size);
+    if (!others) continue;
+    for (const p of paths) srcCand.push(p);
+    for (const p of others) dstCand.push(p);
+  }
+
+  const pairs = [];
+  if (srcCand.length) {
+    setPhase(`Hashing ${(srcCand.length + dstCand.length).toLocaleString()} rename candidates…`);
+    const [srcHashes, dstHashes] = await Promise.all([
+      hashFiles(ctl, src, srcCand),
+      hashFiles(ctl, dst, dstCand),
+    ]);
+    stopIfCancelled();
+
+    const byKey = new Map();
+    for (const p of dstCand.sort()) {
+      const h = dstHashes.get(p);
+      if (!h || !h.md5) continue;
+      const key = `${h.size}:${h.md5}`;
+      if (!byKey.has(key)) byKey.set(key, []);
+      byKey.get(key).push(p);
+    }
+    for (const p of srcCand.sort()) {
+      const h = srcHashes.get(p);
+      const list = h && h.md5 && byKey.get(`${h.size}:${h.md5}`);
+      if (!list || !list.length) continue;
+      // Among identical files prefer the one that kept its name (a move).
+      const leaf = path.posix.basename(p);
+      const i = Math.max(0, list.findIndex(d => path.posix.basename(d) === leaf));
+      pairs.push({ from: list.splice(i, 1)[0], to: p });
+    }
+  }
+  log('INFO', `Rename pre-pass: ${srcFiles.size.toLocaleString()} source / ${dstFiles.size.toLocaleString()} destination files, ${pairs.length.toLocaleString()} renames detected`);
+
+  // Space check. `need` is a lower bound (new files plus growth of files whose
+  // size changed), so a failure here means the run could not have fit. A mirror
+  // gets back the space of everything it deletes up front; a backup moves those
+  // files into the versions folder on the same drive and gets nothing back.
+  const frees = job.type === 'mirror';
+  const pairedTo = new Set(pairs.map(p => p.to));
+  const pairedFrom = new Set(pairs.map(p => p.from));
+  let need = 0, freed = 0;
+  for (const [p, f] of srcFiles) {
+    const d = dstFiles.get(p);
+    const size = Math.max(0, f.size);
+    if (!d) { if (!pairedTo.has(p)) need += size; }
+    else if (d.size !== f.size) need += frees ? Math.max(0, size - Math.max(0, d.size)) : size;
+  }
+  if (frees) {
+    for (const [p, f] of dstFiles) {
+      if (!srcFiles.has(p) && !pairedFrom.has(p)) freed += Math.max(0, f.size);
+    }
+  }
+  let free = null;
+  try {
+    const about = await runTracked(ctl, ['about', dst, '--json']);
+    if (about.code === 0) free = JSON.parse(about.stdout).free;
+  } catch { /* backend cannot report free space */ }
+  stopIfCancelled();
+  if (typeof free === 'number') {
+    const available = free + freed;
+    const detail = `${fmtBytes(need)} to transfer, ${fmtBytes(available)} available`
+      + (frees ? ` (${fmtBytes(free)} free + ${fmtBytes(freed)} freed by deletions)` : '');
+    if (need > available) {
+      if (!dryRun) throw new Error(`Not enough space on destination: ${detail}`);
+      log('NOTICE', `Space check: NOT ENOUGH SPACE — ${detail}`);
+    } else {
+      log('INFO', `Space check: ${detail}`);
+    }
+  } else {
+    log('INFO', 'Space check skipped: destination does not report free space');
+  }
+
+  if (!pairs.length) return;
+  setPhase(`Renaming ${pairs.length.toLocaleString()} files…`);
+  let next = 0;
+  const worker = async () => {
+    while (next < pairs.length) {
+      stopIfCancelled();
+      const { from, to } = pairs[next++];
+      if (dryRun) { log('NOTICE', `${to}: Skipped rename as --dry-run from "${from}"`); continue; }
+      const r = await runTracked(ctl, ['moveto', joinRemote(dst, from), joinRemote(dst, to)]);
+      stopIfCancelled();
+      if (r.code === 0) log('INFO', `${to}: Renamed from "${from}"`);
+      else log('ERROR', `${to}: Failed to rename from "${from}": ${r.stderr.trim().split('\n').pop() || `rclone exit ${r.code}`}`);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, pairs.length) }, worker));
+}
+
+async function runJob(job, opts = {}) {
   const { dryRun = false } = opts;
   fs.mkdirSync(LOGS_DIR, { recursive: true });
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -400,17 +616,53 @@ function runJob(job, opts = {}) {
   if (job.deleteBefore && job.type !== 'sync') args.push('--delete-before');
   // --track-renames converts a source-side rename/move from delete+re-transfer
   // into a server-side move on the destination (matched by size+hash). Same
-  // mirror/backup-only applicability as --delete-before.
-  if (job.trackRenames && job.type !== 'sync') args.push('--track-renames');
+  // mirror/backup-only applicability as --delete-before. rclone cannot honour
+  // both flags at once, so with both on the renames are done by renamePrePass()
+  // and rclone only gets --delete-before.
+  const prePass = job.deleteBefore && job.trackRenames && job.type !== 'sync';
+  if (job.trackRenames && job.type !== 'sync' && !prePass) args.push('--track-renames');
   if (dryRun) args.push('--dry-run');
 
   const startTime = Date.now();
   jobProgress[job.id] = { percent: 0, transferred: '', total: '', speed: '', eta: '', startTime, simulation: dryRun };
   jobStats[job.id] = { logFile, src: displaySrc, dst, timestamp, startTime, simulation: dryRun };
 
+  // Stop handle covering every rclone process the run spawns.
+  const ctl = {
+    cancelled: false,
+    procs: new Set(),
+    kill(sig) { this.cancelled = true; for (const p of this.procs) p.kill(sig); },
+  };
+  runningProcesses[job.id] = ctl;
+
+  if (prePass) {
+    const log = (level, msg) => {
+      const d = new Date(), z = n => String(n).padStart(2, '0');
+      const ts = `${d.getFullYear()}/${z(d.getMonth() + 1)}/${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}:${z(d.getSeconds())}`;
+      logStream.write(`${ts} ${level.padEnd(6)}: ${msg}\n`);
+    };
+    const setPhase = phase => { if (jobProgress[job.id]) jobProgress[job.id].phase = phase; };
+    try {
+      await renamePrePass(ctl, { job, src, dst, filterArgs, dryRun, log, setPhase });
+      setPhase('');
+    } catch (err) {
+      const stopped = ctl.cancelled;
+      for (const p of ctl.procs) p.kill();
+      if (!stopped) log('ERROR', `Rename pre-pass: ${err.message}`);
+      await new Promise(res => logStream.end(res));
+      delete runningProcesses[job.id];
+      jobStats[job.id].endTime = Date.now();
+      jobStats[job.id].finalProgress = { ...jobProgress[job.id] };
+      jobStats[job.id].result = stopped ? 'stopped' : 'failed';
+      if (stopped) throw new Error('Job stopped by user');
+      jobStats[job.id].error = err.message;
+      throw err;
+    }
+  }
+
   return new Promise((resolve, reject) => {
     const proc = spawn('rclone', args, { env: env() });
-    runningProcesses[job.id] = proc;
+    ctl.procs.add(proc);
 
     proc.stderr.on('data', data => {
       const text = data.toString();
@@ -533,7 +785,8 @@ function esc(s) {
 
 // Async so fs.promises.writeFile doesn't block the event loop for large reports.
 // summary shape: { copied[], copiedTotal, deleted[], deletedTotal,
-//                  updated[], updatedTotal, errors[], errorsTotal }
+//                  updated[], updatedTotal, renamed[], renamedTotal,
+//                  errors[], errorsTotal }
 async function generateReport(job, logFile, summary, integrity, statsBlob) {
   fs.mkdirSync(REPORTS_DIR, { recursive: true });
   const ts = new Date(statsBlob.startTime).toISOString().replace(/[:.]/g, '-');
@@ -555,6 +808,7 @@ async function generateReport(job, logFile, summary, integrity, statsBlob) {
   const copiedCount  = summary.copiedTotal;
   const deletedCount = summary.deletedTotal;
   const updatedCount = summary.updatedTotal;
+  const renamedCount = summary.renamedTotal || 0;
   const errCount     = summary.errorsTotal;
 
   const integSection = integrity ? `
@@ -624,6 +878,7 @@ ${isSim ? `<div class="rpt-warn">&#9888; DRY-RUN SIMULATION &mdash; no files wer
   <a href="#copied">${verb}Copied (${copiedCount.toLocaleString()})</a>
   <a href="#deleted">${verb}Deleted (${deletedCount.toLocaleString()})</a>
   <a href="#updated">${verb}Updated (${updatedCount.toLocaleString()})</a>
+  <a href="#renamed">${verb}Renamed (${renamedCount.toLocaleString()})</a>
   <a href="#errors">Errors (${errCount.toLocaleString()})</a>
 </div>
 <br>
@@ -646,6 +901,7 @@ ${isSim ? `<div class="rpt-warn">&#9888; DRY-RUN SIMULATION &mdash; no files wer
 }</td></tr>
 <tr><td class="rpt-lbl">Rename tracking</td><td colspan="3" class="rpt-val">${
   job.type === 'sync' ? 'n/a — copy only'
+  : job.trackRenames && job.deleteBefore ? 'On — renamed/moved files moved on the destination in a pre-pass, before deletions and transfers'
   : job.trackRenames ? 'On — renamed/moved files moved server-side (--track-renames)'
   : 'Off — renamed files re-transferred'
 }</td></tr>
@@ -662,6 +918,8 @@ ${isSim ? `<div class="rpt-warn">&#9888; DRY-RUN SIMULATION &mdash; no files wer
     <td class="rpt-val">${deletedCount.toLocaleString()} files</td></tr>
 <tr><td class="rpt-lbl">${verb}Updated</td>
     <td class="rpt-val">${updatedCount.toLocaleString()} files</td></tr>
+<tr><td class="rpt-lbl">${verb}Renamed on Destination</td>
+    <td class="rpt-val">${renamedCount.toLocaleString()} files</td></tr>
 <tr><td class="rpt-lbl">Errors</td>
     <td class="rpt-val"><span style="color:${errCount > 0 ? '#dc2626' : '#16a34a'}">${errCount.toLocaleString()}</span></td></tr>
 <tr><td class="rpt-lbl">Average Speed</td>
@@ -691,6 +949,7 @@ ${integSection}
 <a id="copied"></a>${fileList(`${verb}Copied Files`, summary.copied, summary.copiedTotal)}
 <a id="updated"></a>${fileList(`${verb}Updated Files`, summary.updated, summary.updatedTotal)}
 <a id="deleted"></a>${fileList(`${verb}Deleted Files`, summary.deleted, summary.deletedTotal)}
+<a id="renamed"></a>${fileList(`${verb}Renamed Files`, summary.renamed || [], renamedCount)}
 <a id="errors"></a>${errCount ? `<button class="collapsible">Errors (${errCount.toLocaleString()})</button><div class="content">
   <table class="rpt-t" cellpadding="3">
     ${summary.errors.map(e => `<tr><td class="rpt-file">${esc(e.file)}</td><td class="rpt-errmsg">${esc(e.message)}</td></tr>`).join('')}

@@ -298,7 +298,7 @@ export default function JobManager() {
                             <span style={{ color: 'var(--warning)', fontWeight: 600 }}>DRY-RUN</span>
                           )}
                           <span style={{ color: 'var(--text)', fontWeight: 500 }}>
-                            {hasPercent ? `${p.percent}%` : 'Starting…'}
+                            {p?.phase || (hasPercent ? `${p.percent}%` : 'Starting…')}
                           </span>
                           {p?.transferred && p?.total && (
                             <span>{p.transferred} / {p.total}</span>
@@ -347,6 +347,7 @@ export default function JobManager() {
                         <span>Copied {job.lastSummary.copied.toLocaleString()}</span>
                         <span>Deleted {job.lastSummary.deleted.toLocaleString()}</span>
                         {job.lastSummary.updated > 0 && <span>Updated {job.lastSummary.updated.toLocaleString()}</span>}
+                        {job.lastSummary.renamed > 0 && <span>Renamed {job.lastSummary.renamed.toLocaleString()}</span>}
                         {job.lastSummary.errors > 0 && (
                           <span style={{ color: 'var(--danger)' }}>{job.lastSummary.errors} errors</span>
                         )}
@@ -365,6 +366,7 @@ export default function JobManager() {
                         <span>Would copy {job.lastSimulation.wouldCopy.toLocaleString()}</span>
                         <span>Would delete {job.lastSimulation.wouldDelete.toLocaleString()}</span>
                         {job.lastSimulation.wouldUpdate > 0 && <span>Would update {job.lastSimulation.wouldUpdate.toLocaleString()}</span>}
+                        {job.lastSimulation.wouldRename > 0 && <span>Would rename {job.lastSimulation.wouldRename.toLocaleString()}</span>}
                       </div>
                     )}
                   </div>
@@ -592,6 +594,7 @@ export default function JobManager() {
                   Detect renamed / moved files
                   <span style={{ display: 'block', fontSize: 12, color: 'var(--muted)', fontWeight: 400 }}>
                     When a file is renamed or moved at the source, rename it on the destination instead of deleting and re-transferring it. Matches by size + hash; needs a destination that supports server-side move. Slower to start on large sets.
+                    {form.deleteBefore && ' Combined with "Delete before copying", the job runs in order: renames, then deletions, then transfers — and stops before changing anything if the destination still would not have room.'}
                   </span>
                 </label>
               </div>

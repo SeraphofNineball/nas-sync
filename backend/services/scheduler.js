@@ -62,6 +62,7 @@ async function executeJob(jobId) {
           copied:  summary.copiedTotal,
           deleted: summary.deletedTotal,
           updated: summary.updatedTotal,
+          renamed: summary.renamedTotal,
           errors:  summary.errorsTotal,
           integrity: integrity
             ? { ok: integrity.ok, differences: integrity.differences, missing: integrity.missing }
@@ -176,6 +177,7 @@ async function simulateJob(jobId) {
           wouldCopy:   summary.copiedTotal,
           wouldDelete: summary.deletedTotal,
           wouldUpdate: summary.updatedTotal,
+          wouldRename: summary.renamedTotal,
           errors:      summary.errorsTotal,
         };
         pruneOldFiles(jobId);
