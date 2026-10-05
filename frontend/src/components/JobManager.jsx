@@ -353,7 +353,9 @@ export default function JobManager() {
                         )}
                         {job.lastSummary.integrity && (
                           <span style={{ color: job.lastSummary.integrity.ok ? 'var(--success)' : 'var(--danger)', fontWeight: 500 }}>
-                            Integrity: {job.lastSummary.integrity.ok ? '✓ pass' : `✗ ${job.lastSummary.integrity.differences + job.lastSummary.integrity.missing} diff`}
+                            Integrity: {job.lastSummary.integrity.ok ? '✓ pass' : (job.lastSummary.integrity.differences + job.lastSummary.integrity.missing > 0
+                              ? `✗ ${job.lastSummary.integrity.differences + job.lastSummary.integrity.missing} diff`
+                              : '✗ check error — see report')}
                           </span>
                         )}
                       </div>

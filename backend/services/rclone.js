@@ -739,8 +739,11 @@ function runIntegrityCheck(job) {
     let totalLen = 0;
     const MAX_BYTES = 4 * 1024 * 1024; // 4 MB cap — ample for any realistic check output
 
+    // Keeps the newest output: the summary counts are printed last, so dropping
+    // the tail (as a keep-the-first cap would) loses them on a noisy check.
     const collect = (d) => {
-      if (totalLen < MAX_BYTES) { chunks.push(d); totalLen += d.length; }
+      chunks.push(d); totalLen += d.length;
+      while (chunks.length > 1 && totalLen - chunks[0].length >= MAX_BYTES) totalLen -= chunks.shift().length;
     };
 
     const proc = spawn('rclone', args, { env: env() });
@@ -756,6 +759,8 @@ function runIntegrityCheck(job) {
         missing:     num(/(\d[\d,]*)\s+files? missing/i) + num(/(\d[\d,]*)\s+missing on/i),
         errors:      num(/(\d[\d,]*)\s+errors? while checking/i),
         exitCode: code,
+        // Last lines of rclone's output, shown in the report when the check fails.
+        output: code === 0 ? '' : clean.split('\n').filter(l => l.trim()).slice(-15).join('\n'),
       });
     });
     proc.on('error', err => {
@@ -821,6 +826,7 @@ async function generateReport(job, logFile, summary, integrity, statsBlob) {
   <tr><td class="rpt-lbl"><strong>Missing</strong></td><td class="rpt-val">${integrity.missing.toLocaleString()}</td></tr>
   <tr><td class="rpt-lbl"><strong>Errors during check</strong></td><td class="rpt-val">${integrity.errors.toLocaleString()}</td></tr>
   <tr><td class="rpt-lbl"><strong>Mode</strong></td><td class="rpt-val">--size-only${job.type === 'sync' ? ' --one-way' : ''}</td></tr>
+  ${!integrity.ok && (integrity.output || integrity.error) ? `<tr><td class="rpt-lbl"><strong>Check output</strong></td><td class="rpt-errmsg"><pre style="margin:0;white-space:pre-wrap;font-size:12px">${esc(integrity.output || integrity.error)}</pre></td></tr>` : ''}
   </table><br>` : '';
 
   const fileList = (title, items, total) => {
